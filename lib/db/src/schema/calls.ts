@@ -12,6 +12,7 @@ export const callsTable = pgTable("calls", {
   durationSeconds: integer("duration_seconds"),
   transcript: text("transcript"),
   summary: text("summary"),
+  keyInsights: text("key_insights"),
   outcome: text("outcome"),
   startedAt: timestamp("started_at"),
   endedAt: timestamp("ended_at"),
