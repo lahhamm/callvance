@@ -1,11 +1,12 @@
 import { Router } from "express";
 import { eq, desc, count } from "drizzle-orm";
-import { db, callsTable, contactsTable, agentConfigTable } from "@workspace/db";
+import { db, callsTable, contactsTable, agentConfigTable, bookingsTable, availabilityTable } from "@workspace/db";
 import Anthropic from "@anthropic-ai/sdk";
 import {
   InitiateCallBody,
   GetCallParams,
 } from "@workspace/api-zod";
+import { sendBookingEmail } from "./bookings";
 
 const router = Router();
 const BLAND_API_KEY = process.env.BLAND_AI_API_KEY;
@@ -76,6 +77,63 @@ async function initiateCallForContact(contactId: number) {
     .where(eq(contactsTable.id, contactId));
 
   return updated[0];
+}
+
+async function extractBookingFromTranscript(
+  transcript: string,
+  contactName: string | null,
+  contactPhone: string | null,
+  contactId: number | null,
+  callId: number,
+): Promise<void> {
+  try {
+    const response = await anthropic.messages.create({
+      model: "claude-haiku-4-5",
+      max_tokens: 512,
+      messages: [{
+        role: "user",
+        content: `Analyze this phone call transcript. Did the caller and lead CONFIRM a specific appointment, meeting, or callback time?
+
+If yes, extract the scheduled date/time as an ISO 8601 string (assume today is ${new Date().toISOString().slice(0, 10)} if only a day is mentioned, or the nearest upcoming occurrence of that day).
+If no appointment was confirmed, return null.
+
+Respond ONLY with valid JSON: {"scheduledAt": "2025-01-15T14:00:00.000Z", "notes": "short note"} or {"scheduledAt": null}
+
+TRANSCRIPT:
+${transcript.slice(0, 3000)}`,
+      }],
+    });
+
+    const text = response.content.find(b => b.type === "text");
+    if (!text || text.type !== "text") return;
+
+    const parsed = JSON.parse(text.text.trim()) as { scheduledAt: string | null; notes?: string };
+    if (!parsed.scheduledAt) return;
+
+    const scheduledAt = new Date(parsed.scheduledAt);
+    if (isNaN(scheduledAt.getTime()) || scheduledAt < new Date()) return;
+
+    const inserted = await db.insert(bookingsTable).values({
+      contactId: contactId ?? undefined,
+      contactName,
+      contactPhone,
+      callId,
+      scheduledAt,
+      notes: parsed.notes ?? null,
+      status: "confirmed",
+    }).returning();
+
+    const booking = inserted[0];
+
+    const availRows = await db.select().from(availabilityTable).limit(1);
+    if (availRows[0]?.notificationEmail) {
+      await sendBookingEmail(booking, availRows[0].notificationEmail);
+    }
+
+    console.log(`[booking] Auto-created booking for ${contactName ?? contactPhone} at ${scheduledAt.toISOString()}`);
+  } catch (err) {
+    console.error("[booking] Failed to extract booking from transcript:", err);
+  }
 }
 
 async function generateAISummary(transcript: string, contactName: string | null): Promise<{ summary: string; keyInsights: string[] }> {
@@ -220,6 +278,18 @@ router.post("/calls/webhook", async (req, res) => {
     const aiResult = await generateAISummary(body.transcript, contactName);
     if (aiResult.summary) updateData.summary = aiResult.summary;
     if (aiResult.keyInsights.length > 0) updateData.keyInsights = JSON.stringify(aiResult.keyInsights);
+
+    await db.update(callsTable).set(updateData).where(eq(callsTable.id, callRecord.id));
+
+    // Detect and auto-create booking if a time was scheduled
+    await extractBookingFromTranscript(
+      body.transcript,
+      contactName ?? null,
+      callRecord.contactPhone,
+      callRecord.contactId ?? null,
+      callRecord.id,
+    );
+    return;
   }
 
   await db.update(callsTable).set(updateData).where(eq(callsTable.id, callRecord.id));

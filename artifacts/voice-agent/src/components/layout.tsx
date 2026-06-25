@@ -1,11 +1,12 @@
 import { Link, useLocation } from "wouter";
-import { Activity, Users, Phone, Settings, Terminal } from "lucide-react";
+import { Activity, Users, Phone, Settings, Terminal, CalendarDays } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: Activity },
   { href: "/contacts", label: "Contacts", icon: Users },
   { href: "/calls", label: "Call History", icon: Phone },
+  { href: "/bookings", label: "Bookings", icon: CalendarDays },
   { href: "/agent", label: "Agent Config", icon: Settings },
 ];
 
@@ -25,13 +26,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
             const Icon = item.icon;
             const isActive = location === item.href;
             return (
-              <Link 
-                key={item.href} 
+              <Link
+                key={item.href}
                 href={item.href}
                 className={cn(
                   "flex items-center gap-3 px-3 py-2 text-sm font-medium transition-colors uppercase tracking-wider",
-                  isActive 
-                    ? "bg-primary/10 text-primary border-l-2 border-primary" 
+                  isActive
+                    ? "bg-primary/10 text-primary border-l-2 border-primary"
                     : "text-muted-foreground hover:text-foreground hover:bg-secondary/50 border-l-2 border-transparent"
                 )}
                 data-testid={`nav-${item.label.toLowerCase().replace(/\s+/g, '-')}`}

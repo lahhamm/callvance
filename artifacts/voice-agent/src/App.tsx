@@ -8,6 +8,7 @@ import Dashboard from "@/pages/dashboard";
 import Contacts from "@/pages/contacts";
 import Calls from "@/pages/calls";
 import AgentConfigPage from "@/pages/agent";
+import BookingsPage from "@/pages/bookings";
 import { ChatBox } from "@/components/chat-box";
 import { useEffect } from "react";
 
@@ -27,6 +28,7 @@ function Router() {
         <Route path="/" component={Dashboard} />
         <Route path="/contacts" component={Contacts} />
         <Route path="/calls" component={Calls} />
+        <Route path="/bookings" component={BookingsPage} />
         <Route path="/agent" component={AgentConfigPage} />
         <Route component={NotFound} />
       </Switch>
