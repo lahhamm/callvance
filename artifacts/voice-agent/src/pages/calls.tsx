@@ -1,9 +1,117 @@
 import { useListCalls } from "@workspace/api-client-react";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { useState } from "react";
-import { FileText, Clock, Calendar } from "lucide-react";
+import { FileText, Clock, Calendar, Zap, ChevronDown, ChevronUp } from "lucide-react";
+
+type CallRow = {
+  id: number;
+  contactName?: string | null;
+  contactPhone: string;
+  status: string;
+  durationSeconds?: number | null;
+  createdAt: string;
+  outcome?: string | null;
+  summary?: string | null;
+  keyInsights?: string | null;
+  transcript?: string | null;
+};
+
+function parseInsights(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed as string[];
+  } catch { /* not JSON */ }
+  return raw.split("\n").filter(Boolean);
+}
+
+function statusVariant(status: string): "default" | "destructive" | "secondary" {
+  if (status === "completed") return "default";
+  if (status === "failed") return "destructive";
+  return "secondary";
+}
+
+function CallCard({ call, onViewTranscript }: { call: CallRow; onViewTranscript: (t: string) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const insights = parseInsights(call.keyInsights);
+  const hasExtra = call.summary || insights.length > 0;
+
+  return (
+    <div
+      className="border-b border-border last:border-0 hover:bg-secondary/20 transition-colors"
+      data-testid={`call-row-${call.id}`}
+    >
+      {/* Main row */}
+      <div className="p-4 flex items-start gap-4">
+        {/* Contact info */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="font-bold text-sm text-foreground">
+              {call.contactName || call.contactPhone}
+            </span>
+            {call.contactName && (
+              <span className="text-xs text-muted-foreground">{call.contactPhone}</span>
+            )}
+            <Badge variant={statusVariant(call.status)} className="uppercase text-[10px]">
+              {call.status}
+            </Badge>
+          </div>
+
+          {/* Summary — always visible if present */}
+          {call.summary && (
+            <p className="mt-1.5 text-xs text-muted-foreground leading-relaxed line-clamp-2">
+              {call.summary}
+            </p>
+          )}
+
+          {/* Key insights */}
+          {insights.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {insights.map((insight, i) => (
+                <span
+                  key={i}
+                  className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20 uppercase tracking-wider"
+                  data-testid={`insight-${call.id}-${i}`}
+                >
+                  <Zap className="w-2.5 h-2.5" />
+                  {insight}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Right side: meta + actions */}
+        <div className="flex flex-col items-end gap-2 shrink-0 text-xs text-muted-foreground">
+          <div className="flex items-center gap-1">
+            <Clock className="w-3 h-3" />
+            {call.durationSeconds ? `${call.durationSeconds}s` : "--"}
+          </div>
+          <div className="flex items-center gap-1">
+            <Calendar className="w-3 h-3" />
+            {new Date(call.createdAt).toLocaleDateString()}
+          </div>
+          <div className="flex items-center gap-2 mt-1">
+            {call.transcript && (
+              <button
+                onClick={() => onViewTranscript(call.transcript!)}
+                className="text-primary hover:text-primary/80 transition-colors inline-flex items-center gap-1 text-[10px] uppercase tracking-wider border border-primary/30 px-2 py-1 hover:bg-primary/10"
+                data-testid={`btn-transcript-${call.id}`}
+              >
+                <FileText className="w-3 h-3" />
+                Transcript
+              </button>
+            )}
+            {call.outcome && (
+              <span className="text-[10px] text-muted-foreground italic">{call.outcome}</span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function Calls() {
   const { data: calls, isLoading } = useListCalls();
@@ -17,95 +125,48 @@ export default function Calls() {
       </div>
 
       <div className="border border-border bg-card overflow-hidden">
-        <Table>
-          <TableHeader className="bg-background/50 border-b border-border">
-            <TableRow className="hover:bg-transparent">
-              <TableHead className="uppercase text-xs font-bold tracking-wider">Target</TableHead>
-              <TableHead className="uppercase text-xs font-bold tracking-wider">Status</TableHead>
-              <TableHead className="uppercase text-xs font-bold tracking-wider">Outcome</TableHead>
-              <TableHead className="uppercase text-xs font-bold tracking-wider hidden md:table-cell">Duration</TableHead>
-              <TableHead className="uppercase text-xs font-bold tracking-wider hidden lg:table-cell">Timestamp</TableHead>
-              <TableHead className="text-right uppercase text-xs font-bold tracking-wider">Transcript</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              <TableRow>
-                <TableCell colSpan={6} className="h-32 text-center text-muted-foreground uppercase text-sm">
-                  Loading Logs...
-                </TableCell>
-              </TableRow>
-            ) : calls?.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={6} className="h-32 text-center text-muted-foreground uppercase text-sm">
-                  No records found
-                </TableCell>
-              </TableRow>
-            ) : (
-              calls?.map((call) => (
-                <TableRow key={call.id} className="border-border hover:bg-secondary/20 transition-colors">
-                  <TableCell>
-                    <div className="font-bold text-sm text-foreground">{call.contactName || 'Unknown'}</div>
-                    <div className="text-xs text-muted-foreground">{call.contactPhone}</div>
-                  </TableCell>
-                  <TableCell>
-                    <Badge 
-                      variant={call.status === 'completed' ? 'default' : call.status === 'failed' ? 'destructive' : 'secondary'} 
-                      className="uppercase text-[10px]"
-                    >
-                      {call.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-sm">
-                    {call.outcome ? (
-                      <span className="text-muted-foreground capitalize">{call.outcome}</span>
-                    ) : '-'}
-                  </TableCell>
-                  <TableCell className="hidden md:table-cell">
-                    <div className="flex items-center text-xs text-muted-foreground">
-                      <Clock className="w-3 h-3 mr-1" />
-                      {call.durationSeconds ? `${call.durationSeconds}s` : '--'}
-                    </div>
-                  </TableCell>
-                  <TableCell className="hidden lg:table-cell">
-                    <div className="flex items-center text-xs text-muted-foreground">
-                      <Calendar className="w-3 h-3 mr-1" />
-                      {new Date(call.createdAt).toLocaleString()}
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {call.transcript && (
-                      <button 
-                        onClick={() => setSelectedTranscript(call.transcript || null)}
-                        className="text-primary hover:text-primary/80 transition-colors p-2 rounded-full hover:bg-primary/10 inline-flex items-center"
-                        title="View Transcript"
-                        data-testid={`btn-transcript-${call.id}`}
-                      >
-                        <FileText className="w-4 h-4" />
-                      </button>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
+        {isLoading ? (
+          <div className="p-8 text-center text-muted-foreground uppercase text-sm">Loading Logs...</div>
+        ) : !calls?.length ? (
+          <div className="p-8 text-center text-muted-foreground uppercase text-sm">No records found</div>
+        ) : (
+          <div>
+            {(calls as CallRow[]).map((call) => (
+              <CallCard key={call.id} call={call} onViewTranscript={setSelectedTranscript} />
+            ))}
+          </div>
+        )}
       </div>
 
       <Dialog open={!!selectedTranscript} onOpenChange={(open) => !open && setSelectedTranscript(null)}>
         <DialogContent className="border-border bg-card max-w-2xl max-h-[80vh] flex flex-col">
           <DialogHeader className="border-b border-border pb-4">
-            <DialogTitle className="uppercase tracking-tight text-primary flex items-center">
-              <TerminalIcon className="w-4 h-4 mr-2" />
-              Raw Transcript Log
+            <DialogTitle className="uppercase tracking-tight text-primary flex items-center gap-2">
+              <FileText className="w-4 h-4" />
+              Transcript Log
             </DialogTitle>
           </DialogHeader>
-          <div className="flex-1 overflow-y-auto p-4 font-mono text-sm space-y-4">
-            {selectedTranscript?.split('\n').map((line, i) => {
+          <div className="flex-1 overflow-y-auto p-4 font-mono text-sm space-y-3">
+            {selectedTranscript?.split("\n").map((line, i) => {
               if (!line.trim()) return null;
-              const isAgent = line.toLowerCase().startsWith('agent:') || line.toLowerCase().startsWith('ai:');
+              const isAgent =
+                line.toLowerCase().startsWith("agent:") ||
+                line.toLowerCase().startsWith("ai:") ||
+                line.toLowerCase().startsWith("aria:");
+              const isCustomer =
+                line.toLowerCase().startsWith("customer:") ||
+                line.toLowerCase().startsWith("user:");
               return (
-                <div key={i} className={`p-3 rounded-none border-l-2 ${isAgent ? 'bg-primary/5 border-primary text-foreground' : 'bg-secondary/30 border-muted-foreground/50 text-muted-foreground'}`}>
+                <div
+                  key={i}
+                  className={`p-3 border-l-2 text-xs leading-relaxed ${
+                    isAgent
+                      ? "bg-primary/5 border-primary text-foreground"
+                      : isCustomer
+                      ? "bg-secondary/30 border-muted-foreground/50 text-muted-foreground"
+                      : "text-muted-foreground/70 border-transparent pl-4"
+                  }`}
+                >
                   {line}
                 </div>
               );
@@ -115,24 +176,4 @@ export default function Calls() {
       </Dialog>
     </div>
   );
-}
-
-function TerminalIcon(props: any) {
-  return (
-    <svg
-      {...props}
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <polyline points="4 17 10 11 4 5" />
-      <line x1="12" x2="20" y1="19" y2="19" />
-    </svg>
-  )
 }
