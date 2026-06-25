@@ -8,6 +8,7 @@ import Dashboard from "@/pages/dashboard";
 import Contacts from "@/pages/contacts";
 import Calls from "@/pages/calls";
 import AgentConfigPage from "@/pages/agent";
+import { ChatBox } from "@/components/chat-box";
 import { useEffect } from "react";
 
 const queryClient = new QueryClient({
@@ -43,6 +44,7 @@ function App() {
       <TooltipProvider>
         <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
           <Router />
+          <ChatBox />
         </WouterRouter>
         <Toaster />
       </TooltipProvider>
