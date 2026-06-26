@@ -1,5 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { syncInProgressCalls } from "./routes/calls";
 
 const rawPort = process.env["PORT"];
 
@@ -22,4 +23,11 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
+
+  // Poll BlandAI every 30 seconds for any stuck in-progress calls.
+  // This is the primary completion mechanism since dev webhooks are unreliable
+  // (they require BlandAI to reach the Replit dev URL which can be flaky).
+  setInterval(() => { syncInProgressCalls().catch(() => {}); }, 30_000);
+  // Also run once immediately on startup to resolve any calls stuck from before
+  setTimeout(() => { syncInProgressCalls().catch(() => {}); }, 3_000);
 });

@@ -44,7 +44,11 @@ export default function GlobalCallsFeed() {
   const { data: calls = [], isLoading } = useQuery<Call[]>({
     queryKey: ["admin-all-calls"],
     queryFn: () => apiFetch("/admin/calls"),
-    refetchInterval: 30000,
+    refetchInterval: (query) => {
+      const data = query.state.data as Call[] | undefined;
+      const hasInProgress = data?.some(c => c.status === "in-progress" || c.status === "queued");
+      return hasInProgress ? 5_000 : 30_000;
+    },
   });
 
   const filtered = calls.filter(c =>

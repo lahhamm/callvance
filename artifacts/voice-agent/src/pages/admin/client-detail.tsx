@@ -69,7 +69,15 @@ export default function ClientDetail() {
 
   const { data: client } = useQuery<Client>({ queryKey: ["admin-client", clientId], queryFn: () => apiFetch(`/admin/clients/${clientId}`) });
   const { data: contacts = [] } = useQuery<Contact[]>({ queryKey: ["admin-contacts", clientId], queryFn: () => apiFetch(`/admin/clients/${clientId}/contacts`) });
-  const { data: calls = [] } = useQuery<Call[]>({ queryKey: ["admin-calls", clientId], queryFn: () => apiFetch(`/admin/clients/${clientId}/calls`) });
+  const { data: calls = [] } = useQuery<Call[]>({
+    queryKey: ["admin-calls", clientId],
+    queryFn: () => apiFetch(`/admin/clients/${clientId}/calls`),
+    refetchInterval: (query) => {
+      const data = query.state.data as Call[] | undefined;
+      const hasInProgress = data?.some(c => c.status === "in-progress" || c.status === "queued");
+      return hasInProgress ? 5_000 : 30_000;
+    },
+  });
   const { data: bookings = [] } = useQuery<Booking[]>({ queryKey: ["admin-bookings", clientId], queryFn: () => apiFetch(`/admin/clients/${clientId}/bookings`) });
   const { data: config } = useQuery<AgentConfig>({ queryKey: ["admin-config", clientId], queryFn: () => apiFetch(`/admin/clients/${clientId}/config`) });
   const { data: avail } = useQuery<Availability>({ queryKey: ["admin-avail", clientId], queryFn: () => apiFetch(`/admin/clients/${clientId}/availability`) });
