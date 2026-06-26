@@ -1,0 +1,2 @@
+- [Multi-tenant architecture](multi-tenant-arch.md) — admin at /admin/* (auth required), client portal at /client/:token (public, separate light theme)
+- [Route order fix](route-order-fix.md) — clientPortalRouter must be mounted BEFORE adminRouter in routes/index.ts to prevent adminAuth intercepting public portal routes

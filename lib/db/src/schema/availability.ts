@@ -2,6 +2,7 @@ import { pgTable, serial, text, integer, timestamp } from "drizzle-orm/pg-core";
 
 export const availabilityTable = pgTable("availability_settings", {
   id: serial("id").primaryKey(),
+  clientId: integer("client_id"),
   timezone: text("timezone").notNull().default("America/New_York"),
   notificationEmail: text("notification_email"),
   availableDays: text("available_days").notNull().default("[1,2,3,4,5]"),

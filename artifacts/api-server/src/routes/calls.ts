@@ -136,7 +136,7 @@ ${transcript.slice(0, 3000)}`,
   }
 }
 
-async function generateAISummary(transcript: string, contactName: string | null): Promise<{ summary: string; keyInsights: string[] }> {
+async function generateAISummary(transcript: string, contactName: string | null): Promise<{ summary: string; keyInsights: string[]; leadScore: string }> {
   try {
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5",
@@ -145,13 +145,14 @@ async function generateAISummary(transcript: string, contactName: string | null)
         role: "user",
         content: `You are analyzing a phone call transcript between an AI agent and a potential customer${contactName ? ` named ${contactName}` : ""}.
 
-Extract the most useful information from this call in two parts:
+Extract the most useful information from this call:
 
 1. A 1-2 sentence plain-English SUMMARY of what happened and the outcome.
-2. Up to 4 KEY INSIGHTS — short, punchy facts (5-8 words each) about the customer's situation, interests, objections, or next steps. These will be shown as highlight tags.
+2. Up to 4 KEY INSIGHTS — short, punchy facts (5-8 words each) about the customer's situation, interests, objections, or next steps.
+3. A LEAD SCORE — classify the lead as exactly one of: "Hot" (ready to buy or very interested), "Warm" (interested but needs nurturing), or "Cold" (not interested or poor fit).
 
 Respond with ONLY valid JSON in this format:
-{"summary": "...", "keyInsights": ["...", "...", "..."]}
+{"summary": "...", "keyInsights": ["...", "...", "..."], "leadScore": "Hot"|"Warm"|"Cold"}
 
 TRANSCRIPT:
 ${transcript.slice(0, 3000)}`
@@ -159,15 +160,16 @@ ${transcript.slice(0, 3000)}`
     });
 
     const text = response.content.find(b => b.type === "text");
-    if (!text || text.type !== "text") return { summary: "", keyInsights: [] };
+    if (!text || text.type !== "text") return { summary: "", keyInsights: [], leadScore: "" };
 
-    const parsed = JSON.parse(text.text.trim()) as { summary: string; keyInsights: string[] };
+    const parsed = JSON.parse(text.text.trim()) as { summary: string; keyInsights: string[]; leadScore: string };
     return {
       summary: parsed.summary || "",
       keyInsights: Array.isArray(parsed.keyInsights) ? parsed.keyInsights.slice(0, 4) : [],
+      leadScore: ["Hot", "Warm", "Cold"].includes(parsed.leadScore) ? parsed.leadScore : "",
     };
   } catch {
-    return { summary: "", keyInsights: [] };
+    return { summary: "", keyInsights: [], leadScore: "" };
   }
 }
 
@@ -278,6 +280,7 @@ router.post("/calls/webhook", async (req, res) => {
     const aiResult = await generateAISummary(body.transcript, contactName);
     if (aiResult.summary) updateData.summary = aiResult.summary;
     if (aiResult.keyInsights.length > 0) updateData.keyInsights = JSON.stringify(aiResult.keyInsights);
+    if (aiResult.leadScore) updateData.leadScore = aiResult.leadScore;
 
     await db.update(callsTable).set(updateData).where(eq(callsTable.id, callRecord.id));
 

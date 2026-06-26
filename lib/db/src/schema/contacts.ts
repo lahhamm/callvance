@@ -1,9 +1,10 @@
-import { pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, integer, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
 export const contactsTable = pgTable("contacts", {
   id: serial("id").primaryKey(),
+  clientId: integer("client_id"),
   name: text("name").notNull(),
   phone: text("phone").notNull(),
   email: text("email"),
@@ -14,6 +15,6 @@ export const contactsTable = pgTable("contacts", {
   lastCalledAt: timestamp("last_called_at"),
 });
 
-export const insertContactSchema = createInsertSchema(contactsTable).omit({ id: true, createdAt: true, lastCalledAt: true, status: true });
+export const insertContactSchema = createInsertSchema(contactsTable).omit({ id: true, createdAt: true, lastCalledAt: true, status: true, clientId: true });
 export type InsertContact = z.infer<typeof insertContactSchema>;
 export type Contact = typeof contactsTable.$inferSelect;

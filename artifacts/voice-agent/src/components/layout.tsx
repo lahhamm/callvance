@@ -1,9 +1,11 @@
 import { Link, useLocation } from "wouter";
-import { Activity, Users, Phone, Settings, Terminal, CalendarDays } from "lucide-react";
+import { Activity, Users, Phone, Settings, Terminal, CalendarDays, LogOut, Shield } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { clearToken } from "@/lib/auth";
 
 const NAV_ITEMS = [
-  { href: "/", label: "Dashboard", icon: Activity },
+  { href: "/admin", label: "Clients", icon: Shield },
+  { href: "/admin/calls", label: "Global Feed", icon: Activity },
   { href: "/contacts", label: "Contacts", icon: Users },
   { href: "/calls", label: "Call History", icon: Phone },
   { href: "/bookings", label: "Bookings", icon: CalendarDays },
@@ -11,20 +13,24 @@ const NAV_ITEMS = [
 ];
 
 export function Layout({ children }: { children: React.ReactNode }) {
-  const [location] = useLocation();
+  const [location, navigate] = useLocation();
+
+  const handleLogout = () => {
+    clearToken();
+    navigate("/login");
+  };
 
   return (
     <div className="flex min-h-[100dvh] bg-background text-foreground font-mono">
-      {/* Sidebar */}
       <aside className="w-64 border-r border-border bg-card hidden md:flex flex-col">
         <div className="h-16 flex items-center px-6 border-b border-border">
           <Terminal className="w-5 h-5 text-primary mr-2" />
           <span className="font-bold text-lg tracking-tight uppercase text-primary">NEXUS_VOICE</span>
         </div>
-        <nav className="flex-1 px-4 py-6 space-y-2">
+        <nav className="flex-1 px-4 py-6 space-y-1">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
-            const isActive = location === item.href;
+            const isActive = location === item.href || (item.href !== "/admin" && location.startsWith(item.href));
             return (
               <Link
                 key={item.href}
@@ -35,7 +41,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
                     ? "bg-primary/10 text-primary border-l-2 border-primary"
                     : "text-muted-foreground hover:text-foreground hover:bg-secondary/50 border-l-2 border-transparent"
                 )}
-                data-testid={`nav-${item.label.toLowerCase().replace(/\s+/g, '-')}`}
               >
                 <Icon className="w-4 h-4" />
                 {item.label}
@@ -43,12 +48,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
-        <div className="p-4 border-t border-border text-xs text-muted-foreground/50 uppercase tracking-widest text-center">
-          SYSTEM_ONLINE
+        <div className="p-4 border-t border-border">
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-2 text-xs text-muted-foreground/50 hover:text-muted-foreground uppercase tracking-widest transition-colors w-full"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            Sign Out
+          </button>
         </div>
       </aside>
 
-      {/* Main Content */}
       <main className="flex-1 flex flex-col min-w-0">
         <header className="h-16 border-b border-border flex items-center px-6 md:hidden">
           <Terminal className="w-5 h-5 text-primary mr-2" />

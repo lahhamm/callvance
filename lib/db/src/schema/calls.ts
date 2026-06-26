@@ -4,6 +4,7 @@ import { z } from "zod/v4";
 
 export const callsTable = pgTable("calls", {
   id: serial("id").primaryKey(),
+  clientId: integer("client_id"),
   contactId: integer("contact_id"),
   contactName: text("contact_name"),
   contactPhone: text("contact_phone").notNull(),
@@ -13,6 +14,7 @@ export const callsTable = pgTable("calls", {
   transcript: text("transcript"),
   summary: text("summary"),
   keyInsights: text("key_insights"),
+  leadScore: text("lead_score"),
   outcome: text("outcome"),
   startedAt: timestamp("started_at"),
   endedAt: timestamp("ended_at"),
