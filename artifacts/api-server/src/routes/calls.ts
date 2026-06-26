@@ -238,15 +238,35 @@ router.post("/calls/webhook", async (req, res) => {
     transcript?: string;
     summary?: string;
     duration?: number;
-    metadata?: { call_db_id?: number };
+    call_length?: number;
+    metadata?: { call_db_id?: number; contact_id?: number };
   };
 
   res.json({ ok: true });
-  if (!body.call_id) return;
 
-  const calls = await db.select().from(callsTable).where(eq(callsTable.blandCallId, body.call_id)).limit(1);
-  const callRecord = calls[0];
-  if (!callRecord) return;
+  // Look up call record — try blandCallId first, then metadata.call_db_id as fallback
+  let callRecord: typeof callsTable.$inferSelect | undefined;
+
+  if (body.call_id) {
+    const byId = await db.select().from(callsTable).where(eq(callsTable.blandCallId, body.call_id)).limit(1);
+    callRecord = byId[0];
+  }
+
+  // Fallback: match by call_db_id in metadata (handles null blandCallId cases)
+  if (!callRecord && body.metadata?.call_db_id) {
+    const byMeta = await db.select().from(callsTable).where(eq(callsTable.id, body.metadata.call_db_id)).limit(1);
+    callRecord = byMeta[0];
+    // Now that we have the record, also store the blandCallId if missing
+    if (callRecord && body.call_id && !callRecord.blandCallId) {
+      await db.update(callsTable).set({ blandCallId: body.call_id }).where(eq(callsTable.id, callRecord.id));
+      callRecord = { ...callRecord, blandCallId: body.call_id };
+    }
+  }
+
+  if (!callRecord) {
+    console.warn(`[webhook] No call record found for call_id=${body.call_id} metadata=${JSON.stringify(body.metadata)}`);
+    return;
+  }
 
   const isCompleted = body.status === "completed" || body.status === "ended";
   const isFailed = body.status === "failed" || body.status === "error";

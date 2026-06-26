@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useParams } from "wouter";
 import { authHeader } from "@/lib/auth";
@@ -107,7 +107,7 @@ export default function ClientDetail() {
 
       {tab === "Contacts" && <ContactsTab clientId={clientId} contacts={contacts} qc={qc} toast={toast} />}
       {tab === "Agent Config" && config && <ConfigTab clientId={clientId} config={config} qc={qc} toast={toast} />}
-      {tab === "Calls" && <CallsTab calls={calls} onTranscript={setTranscript} />}
+      {tab === "Calls" && <CallsTab clientId={clientId} calls={calls} onTranscript={setTranscript} qc={qc} toast={toast} />}
       {tab === "Bookings" && <BookingsTab clientId={clientId} bookings={bookings} qc={qc} toast={toast} />}
       {tab === "Availability" && avail && <AvailabilityTab clientId={clientId} avail={avail} qc={qc} toast={toast} />}
       {tab === "Access" && <AccessTab clientId={clientId} client={client} qc={qc} toast={toast} />}
@@ -217,28 +217,58 @@ function ConfigTab({ clientId, config, qc, toast }: { clientId: number; config: 
   );
 }
 
-function CallsTab({ calls, onTranscript }: { calls: Call[]; onTranscript: (t: string) => void }) {
+function CallsTab({ clientId, calls, onTranscript, qc, toast }: { clientId: number; calls: Call[]; onTranscript: (t: string) => void; qc: ReturnType<typeof useQueryClient>; toast: ReturnType<typeof useToast>["toast"] }) {
+  const hasInProgress = calls.some(c => c.status === "in-progress" || c.status === "queued");
+
+  const syncMutation = useMutation({
+    mutationFn: () => apiFetch(`/admin/clients/${clientId}/calls/sync`, { method: "POST" }),
+    onSuccess: (data: { synced: number; checked: number }) => {
+      qc.invalidateQueries({ queryKey: ["admin-calls", clientId] });
+      qc.invalidateQueries({ queryKey: ["admin-bookings", clientId] });
+      if (data.synced > 0) toast({ title: `Synced ${data.synced} call${data.synced > 1 ? "s" : ""} from BlandAI` });
+      else toast({ title: "All calls up to date" });
+    },
+    onError: () => toast({ title: "Sync failed", variant: "destructive" }),
+  });
+
+  // Auto-sync on mount if any calls are stuck in-progress
+  useEffect(() => {
+    if (hasInProgress && !syncMutation.isPending) {
+      syncMutation.mutate();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
-    <div className="bg-card border border-border rounded-lg overflow-hidden divide-y divide-border">
-      {calls.length === 0
-        ? <div className="p-8 text-center text-muted-foreground text-sm">No calls yet</div>
-        : calls.map(c => {
-          const insights = parseInsights(c.keyInsights);
-          return (
-            <div key={c.id} className="p-4 space-y-2 hover:bg-secondary/20 transition-colors">
-              <div className="flex items-center gap-2.5 flex-wrap">
-                <span className="font-medium text-sm text-foreground">{c.contactName || c.contactPhone}</span>
-                <Badge variant={c.status === "completed" ? "default" : c.status === "failed" ? "destructive" : "secondary"} className="text-xs">{c.status}</Badge>
-                <ScoreBadge score={c.leadScore} />
-                <span className="text-xs text-muted-foreground ml-auto">{new Date(c.createdAt).toLocaleString()}</span>
-                {c.durationSeconds && <span className="text-xs text-muted-foreground flex items-center gap-1"><Clock className="w-3 h-3" />{c.durationSeconds}s</span>}
-                {c.transcript && <button onClick={() => onTranscript(c.transcript!)} className="text-xs text-primary hover:text-primary/80 flex items-center gap-1 transition-colors"><FileText className="w-3 h-3" />Transcript</button>}
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-sm text-muted-foreground">{calls.length} call{calls.length !== 1 ? "s" : ""}</span>
+        <Button size="sm" variant="outline" onClick={() => syncMutation.mutate()} disabled={syncMutation.isPending} className="gap-1.5 h-7 text-xs">
+          <RefreshCw className={`w-3 h-3 ${syncMutation.isPending ? "animate-spin" : ""}`} />
+          {syncMutation.isPending ? "Syncing…" : "Sync with BlandAI"}
+        </Button>
+      </div>
+      <div className="bg-card border border-border rounded-lg overflow-hidden divide-y divide-border">
+        {calls.length === 0
+          ? <div className="p-8 text-center text-muted-foreground text-sm">No calls yet</div>
+          : calls.map(c => {
+            const insights = parseInsights(c.keyInsights);
+            return (
+              <div key={c.id} className="p-4 space-y-2 hover:bg-secondary/20 transition-colors">
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  <span className="font-medium text-sm text-foreground">{c.contactName || c.contactPhone}</span>
+                  <Badge variant={c.status === "completed" ? "default" : c.status === "failed" ? "destructive" : "secondary"} className="text-xs">{c.status}</Badge>
+                  <ScoreBadge score={c.leadScore} />
+                  <span className="text-xs text-muted-foreground ml-auto">{new Date(c.createdAt).toLocaleString()}</span>
+                  {c.durationSeconds && <span className="text-xs text-muted-foreground flex items-center gap-1"><Clock className="w-3 h-3" />{c.durationSeconds}s</span>}
+                  {c.transcript && <button onClick={() => onTranscript(c.transcript!)} className="text-xs text-primary hover:text-primary/80 flex items-center gap-1 transition-colors"><FileText className="w-3 h-3" />Transcript</button>}
+                </div>
+                {c.summary && <p className="text-sm text-muted-foreground leading-relaxed">{c.summary}</p>}
+                {insights.length > 0 && <div className="flex flex-wrap gap-1.5">{insights.map((ins, i) => <span key={i} className="text-xs px-2 py-0.5 bg-primary/10 text-primary border border-primary/20 rounded-full">{ins}</span>)}</div>}
               </div>
-              {c.summary && <p className="text-sm text-muted-foreground leading-relaxed">{c.summary}</p>}
-              {insights.length > 0 && <div className="flex flex-wrap gap-1.5">{insights.map((ins, i) => <span key={i} className="text-xs px-2 py-0.5 bg-primary/10 text-primary border border-primary/20 rounded-full">{ins}</span>)}</div>}
-            </div>
-          );
-        })}
+            );
+          })}
+      </div>
     </div>
   );
 }

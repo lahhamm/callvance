@@ -227,11 +227,103 @@ router.post("/admin/clients/:id/calls/initiate", async (req, res) => {
     res.status(502).json({ error: "BlandAI error" }); return;
   }
 
-  const blandData = (await blandRes.json()) as { call_id?: string };
-  await db.update(callsTable).set({ blandCallId: blandData.call_id, status: "in-progress", startedAt: new Date() }).where(eq(callsTable.id, callRecord.id));
+  const blandData = (await blandRes.json()) as { call_id?: string; c_id?: string; id?: string };
+  const blandCallId = blandData.call_id ?? blandData.c_id ?? blandData.id ?? null;
+  console.log(`[initiate] BlandAI response call_id=${blandCallId}`, JSON.stringify(blandData).slice(0, 200));
+  await db.update(callsTable).set({ blandCallId, status: "in-progress", startedAt: new Date() }).where(eq(callsTable.id, callRecord.id));
   await db.update(contactsTable).set({ lastCalledAt: new Date(), status: "contacted" }).where(eq(contactsTable.id, contactId));
 
   res.status(201).json(serializeCall(callRecord));
+});
+
+// ── POST /admin/clients/:id/calls/sync — poll BlandAI for stuck in-progress calls ──
+router.post("/admin/clients/:id/calls/sync", async (req, res) => {
+  const clientId = Number(req.params.id);
+  if (!BLAND_API_KEY) { res.json({ synced: 0 }); return; }
+
+  const inProgress = await db.select().from(callsTable)
+    .where(and(eq(callsTable.clientId, clientId),
+      // Get both in-progress and queued calls
+      eq(callsTable.status, "in-progress")))
+    .limit(20);
+
+  let synced = 0;
+  for (const call of inProgress) {
+    try {
+      let blandId = call.blandCallId;
+
+      // If no blandCallId stored, search BlandAI by metadata
+      if (!blandId) {
+        const listRes = await fetch(`${BLAND_BASE_URL}/calls?limit=50`, {
+          headers: { Authorization: BLAND_API_KEY },
+        });
+        if (listRes.ok) {
+          const listData = (await listRes.json()) as { calls?: Array<{ c_id?: string; call_id?: string; metadata?: { call_db_id?: number } }> };
+          const match = listData.calls?.find(c => c.metadata?.call_db_id === call.id);
+          if (match) blandId = match.c_id ?? match.call_id ?? null;
+        }
+      }
+
+      if (!blandId) continue;
+
+      const bRes = await fetch(`${BLAND_BASE_URL}/calls/${blandId}`, {
+        headers: { Authorization: BLAND_API_KEY },
+      });
+      if (!bRes.ok) continue;
+
+      const data = (await bRes.json()) as {
+        status?: string; completed?: boolean; queue_status?: string;
+        transcript?: string | Array<{ user: string; text: string }>;
+        summary?: string; call_length?: number; error_message?: string;
+      };
+
+      const isCompleted = data.completed === true || data.status === "completed" || data.queue_status === "complete";
+      const isFailed = data.status === "failed" || !!data.error_message;
+      if (!isCompleted && !isFailed) continue;
+
+      const updateData: Record<string, unknown> = {
+        blandCallId: blandId,
+        status: isCompleted ? "completed" : "failed",
+        endedAt: new Date(),
+      };
+      if (data.call_length) updateData.durationSeconds = Math.round(data.call_length);
+
+      let transcriptText: string | undefined;
+      if (data.transcript) {
+        transcriptText = typeof data.transcript === "string"
+          ? data.transcript
+          : (data.transcript as Array<{ user: string; text: string }>).map(t => `${t.user}: ${t.text}`).join("\n");
+        updateData.transcript = transcriptText;
+      }
+      if (data.summary) updateData.summary = data.summary;
+
+      // Generate AI summary if completing with a transcript
+      if (isCompleted && transcriptText && !call.keyInsights) {
+        try {
+          const aiResp = await anthropic.messages.create({
+            model: "claude-haiku-4-5",
+            max_tokens: 1024,
+            messages: [{ role: "user", content: `Analyze this phone call transcript. Extract:\n1. A 1-2 sentence SUMMARY.\n2. Up to 4 KEY INSIGHTS (5-8 words each).\n3. LEAD SCORE: "Hot", "Warm", or "Cold".\nRespond ONLY with JSON: {"summary":"...","keyInsights":["..."],"leadScore":"Hot"}\n\nTRANSCRIPT:\n${transcriptText.slice(0, 3000)}` }],
+          });
+          const textBlock = aiResp.content.find(b => b.type === "text");
+          if (textBlock && textBlock.type === "text") {
+            const parsed = JSON.parse(textBlock.text.trim()) as { summary?: string; keyInsights?: string[]; leadScore?: string };
+            if (parsed.summary) updateData.summary = parsed.summary;
+            if (Array.isArray(parsed.keyInsights) && parsed.keyInsights.length > 0) updateData.keyInsights = JSON.stringify(parsed.keyInsights.slice(0, 4));
+            if (parsed.leadScore && ["Hot","Warm","Cold"].includes(parsed.leadScore)) updateData.leadScore = parsed.leadScore;
+          }
+        } catch { /* skip AI if it fails */ }
+      }
+
+      await db.update(callsTable).set(updateData as Partial<typeof callsTable.$inferSelect>).where(eq(callsTable.id, call.id));
+      synced++;
+      console.log(`[sync] Updated call ${call.id} → ${updateData.status}`);
+    } catch (err) {
+      console.error(`[sync] Error syncing call ${call.id}:`, err);
+    }
+  }
+
+  res.json({ synced, checked: inProgress.length });
 });
 
 router.post("/admin/clients/:id/calls/bulk", async (req, res) => {
@@ -260,8 +352,9 @@ router.post("/admin/clients/:id/calls/bulk", async (req, res) => {
 
       const blandRes = await fetch(`${BLAND_BASE_URL}/calls`, { method: "POST", headers: { Authorization: BLAND_API_KEY!, "Content-Type": "application/json" }, body: JSON.stringify(blandPayload) });
       if (blandRes.ok) {
-        const blandData = (await blandRes.json()) as { call_id?: string };
-        await db.update(callsTable).set({ blandCallId: blandData.call_id, status: "in-progress", startedAt: new Date() }).where(eq(callsTable.id, callRecord.id));
+        const blandData = (await blandRes.json()) as { call_id?: string; c_id?: string; id?: string };
+        const blandCallId = blandData.call_id ?? blandData.c_id ?? blandData.id ?? null;
+        await db.update(callsTable).set({ blandCallId, status: "in-progress", startedAt: new Date() }).where(eq(callsTable.id, callRecord.id));
         await db.update(contactsTable).set({ lastCalledAt: new Date(), status: "contacted" }).where(eq(contactsTable.id, contactId));
         results.push({ contactId, success: true, callId: callRecord.id });
       } else {
@@ -433,8 +526,10 @@ Rules:
             });
 
             if (blandRes.ok) {
-              const blandData = (await blandRes.json()) as { call_id?: string };
-              await db.update(callsTable).set({ blandCallId: blandData.call_id, status: "in-progress", startedAt: new Date() }).where(eq(callsTable.id, callRecord.id));
+              const blandData = (await blandRes.json()) as { call_id?: string; c_id?: string; id?: string };
+              const blandCallId = blandData.call_id ?? blandData.c_id ?? blandData.id ?? null;
+              console.log(`[chat-initiate] BlandAI response call_id=${blandCallId}`, JSON.stringify(blandData).slice(0, 200));
+              await db.update(callsTable).set({ blandCallId, status: "in-progress", startedAt: new Date() }).where(eq(callsTable.id, callRecord.id));
               if (contactDbId) await db.update(contactsTable).set({ lastCalledAt: new Date(), status: "contacted" }).where(eq(contactsTable.id, contactDbId));
               callResult = { success: true, message: `Call to ${contactName ?? contactPhone} initiated.`, call: { id: callRecord.id, phone: contactPhone, name: contactName } };
             } else {
