@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Activity, Users, Phone, Settings, CalendarDays, LogOut, Shield, PhoneCall } from "lucide-react";
+import { Activity, Users, CalendarDays, LogOut, Shield, PhoneCall } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { clearSession } from "@/lib/auth";
 import { ChatBox } from "./chat-box";
@@ -7,6 +7,8 @@ import { ChatBox } from "./chat-box";
 const NAV_ITEMS = [
   { href: "/admin", label: "Clients", icon: Shield, exact: true },
   { href: "/admin/calls", label: "All Calls", icon: Activity },
+  { href: "/admin/contacts", label: "All Contacts", icon: Users },
+  { href: "/admin/bookings", label: "All Bookings", icon: CalendarDays },
 ];
 
 export function Layout({ children }: { children: React.ReactNode }) {

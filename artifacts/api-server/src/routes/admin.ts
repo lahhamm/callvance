@@ -475,6 +475,24 @@ Rules:
   }
 });
 
+// ── GLOBAL CONTACTS FEED ──────────────────────────────────────────────────────
+
+router.get("/admin/contacts", async (_req, res) => {
+  const contacts = await db.select().from(contactsTable).orderBy(desc(contactsTable.createdAt)).limit(500);
+  const clients = await db.select().from(clientsTable);
+  const clientMap = new Map(clients.map(c => [c.id, c.name]));
+  res.json(contacts.map(c => ({ ...serializeContact(c), clientName: c.clientId ? (clientMap.get(c.clientId) ?? null) : null })));
+});
+
+// ── GLOBAL BOOKINGS FEED ──────────────────────────────────────────────────────
+
+router.get("/admin/bookings", async (_req, res) => {
+  const bookings = await db.select().from(bookingsTable).orderBy(desc(bookingsTable.scheduledAt)).limit(200);
+  const clients = await db.select().from(clientsTable);
+  const clientMap = new Map(clients.map(c => [c.id, c.name]));
+  res.json(bookings.map(b => ({ ...serializeBooking(b), clientName: b.clientId ? (clientMap.get(b.clientId) ?? null) : null })));
+});
+
 // ── GLOBAL CALLS FEED ─────────────────────────────────────────────────────────
 
 router.get("/admin/calls", async (_req, res) => {
