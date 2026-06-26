@@ -36,7 +36,7 @@ type Availability = { id: number; timezone: string; notificationEmail?: string; 
 const VOICES = ["maya", "ryan", "adriana", "tina", "matt", "evelyn"];
 const DAYS = [{ value: 0, label: "Sun" }, { value: 1, label: "Mon" }, { value: 2, label: "Tue" }, { value: 3, label: "Wed" }, { value: 4, label: "Thu" }, { value: 5, label: "Fri" }, { value: 6, label: "Sat" }];
 const TIMEZONES = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London", "Europe/Paris", "Asia/Tokyo", "Asia/Singapore", "Australia/Sydney"];
-const TABS = ["Contacts", "Agent Config", "Calls", "Bookings", "Availability", "Access"] as const;
+const TABS = ["Contacts", "Config", "Calls", "Bookings", "Schedule", "Access"] as const;
 
 function apiFetch(path: string, init?: RequestInit) {
   return fetch(`/api${path}`, { ...init, headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers as Record<string, string> ?? {}) } }).then(r => { if (!r.ok) throw new Error("API error"); return r.json(); });
@@ -107,19 +107,19 @@ export default function ClientDetail() {
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-border flex gap-0 -mb-px overflow-x-auto scrollbar-none">
+      <div className="border-b border-border flex flex-wrap gap-0">
         {TABS.map(t => (
-          <button key={t} onClick={() => setTab(t)} className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap shrink-0 ${tab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
+          <button key={t} onClick={() => setTab(t)} className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${tab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
             {t}
           </button>
         ))}
       </div>
 
       {tab === "Contacts" && <ContactsTab clientId={clientId} contacts={contacts} qc={qc} toast={toast} />}
-      {tab === "Agent Config" && config && <ConfigTab clientId={clientId} config={config} qc={qc} toast={toast} />}
+      {tab === "Config" && config && <ConfigTab clientId={clientId} config={config} qc={qc} toast={toast} />}
       {tab === "Calls" && <CallsTab clientId={clientId} calls={calls} onTranscript={setTranscript} qc={qc} toast={toast} />}
       {tab === "Bookings" && <BookingsTab clientId={clientId} bookings={bookings} qc={qc} toast={toast} />}
-      {tab === "Availability" && avail && <AvailabilityTab clientId={clientId} avail={avail} qc={qc} toast={toast} />}
+      {tab === "Schedule" && avail && <AvailabilityTab clientId={clientId} avail={avail} qc={qc} toast={toast} />}
       {tab === "Access" && <AccessTab clientId={clientId} client={client} qc={qc} toast={toast} />}
 
       {/* Transcript */}
