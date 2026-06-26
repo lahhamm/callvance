@@ -107,9 +107,9 @@ export default function ClientDetail() {
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-border flex gap-0 -mb-px">
+      <div className="border-b border-border flex gap-0 -mb-px overflow-x-auto scrollbar-none">
         {TABS.map(t => (
-          <button key={t} onClick={() => setTab(t)} className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${tab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
+          <button key={t} onClick={() => setTab(t)} className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap shrink-0 ${tab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
             {t}
           </button>
         ))}
