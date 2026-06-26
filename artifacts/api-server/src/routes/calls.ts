@@ -42,6 +42,7 @@ async function initiateCallForContact(contactId: number) {
   if (!BLAND_API_KEY) throw new Error("BLAND_AI_API_KEY not configured");
 
   const inserted = await db.insert(callsTable).values({
+    clientId: contact[0].clientId ?? null,
     contactId: contact[0].id,
     contactName: contact[0].name,
     contactPhone: contact[0].phone,

@@ -128,7 +128,7 @@ export default function ClientDetail() {
       {tab === "Calls" && <CallsTab clientId={clientId} calls={calls} onTranscript={setTranscript} qc={qc} toast={toast} />}
       {tab === "Bookings" && <BookingsTab clientId={clientId} bookings={bookings} qc={qc} toast={toast} />}
       {tab === "Schedule" && avail && <AvailabilityTab clientId={clientId} avail={avail} qc={qc} toast={toast} />}
-      {tab === "Access" && <AccessTab clientId={clientId} client={client} qc={qc} toast={toast} />}
+      {tab === "Access" && client && <AccessTab clientId={clientId} client={client} qc={qc} toast={toast} />}
 
       {/* Transcript */}
       <Dialog open={!!transcript} onOpenChange={o => !o && setTranscript(null)}>

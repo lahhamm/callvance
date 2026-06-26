@@ -18,7 +18,8 @@ type Client = {
 type Stats = { totalClients: number; activeClients: number; totalCalls: number; completedCalls: number };
 
 function apiFetch(path: string, init?: RequestInit) {
-  return fetch(`/api${path}`, { ...init, headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers as Record<string, string> ?? {}) } }).then(r => r.json());
+  return fetch(`/api${path}`, { ...init, headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers as Record<string, string> ?? {}) } })
+    .then(r => { if (!r.ok) throw new Error("API error"); return r.json(); });
 }
 
 export default function AdminHome() {

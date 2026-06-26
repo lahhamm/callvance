@@ -13,25 +13,27 @@ function serializeBooking(b: typeof bookingsTable.$inferSelect) {
 
 async function resolveClient(token: string) {
   const rows = await db.select().from(clientsTable).where(eq(clientsTable.accessToken, token)).limit(1);
-  return rows[0] ?? null;
+  const client = rows[0] ?? null;
+  if (!client || !client.isActive) return null;
+  return client;
 }
 
 router.get("/client/:token", async (req, res) => {
   const client = await resolveClient(req.params.token);
-  if (!client) { res.status(404).json({ error: "Not found" }); return; }
+  if (!client) { res.status(403).json({ error: "Access revoked or invalid link" }); return; }
   res.json({ id: client.id, name: client.name, businessType: client.businessType, calUsername: client.calUsername ?? null, calEventId: client.calEventId ?? null });
 });
 
 router.get("/client/:token/calls", async (req, res) => {
   const client = await resolveClient(req.params.token);
-  if (!client) { res.status(404).json({ error: "Not found" }); return; }
+  if (!client) { res.status(403).json({ error: "Access revoked or invalid link" }); return; }
   const calls = await db.select().from(callsTable).where(eq(callsTable.clientId, client.id)).orderBy(desc(callsTable.createdAt));
   res.json(calls.map(serializeCall));
 });
 
 router.get("/client/:token/bookings", async (req, res) => {
   const client = await resolveClient(req.params.token);
-  if (!client) { res.status(404).json({ error: "Not found" }); return; }
+  if (!client) { res.status(403).json({ error: "Access revoked or invalid link" }); return; }
   const now = new Date();
   const { availabilityTable } = await import("@workspace/db");
   const [bookings, availRows] = await Promise.all([

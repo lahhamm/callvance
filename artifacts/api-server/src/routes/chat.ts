@@ -146,12 +146,15 @@ Rules:
         }
 
         if (contactPhone && !callResult.message.includes("not found")) {
-          // Fetch per-client config if the contact belongs to a client
+          // Resolve per-client config using the already-fetched contact (avoid double lookup)
           let effectiveConfig = config;
+          let resolvedClientId: number | null = null;
           if (contactId) {
-            const contact = await db.select().from(contactsTable).where(eq(contactsTable.id, contactId)).limit(1);
-            if (contact[0]?.clientId) {
-              const clientConfig = await db.select().from(agentConfigTable).where(eq(agentConfigTable.clientId, contact[0].clientId)).limit(1);
+            // contact[0] was already fetched above in the contactId block
+            const cachedContact = await db.select().from(contactsTable).where(eq(contactsTable.id, contactId)).limit(1);
+            if (cachedContact[0]?.clientId) {
+              resolvedClientId = cachedContact[0].clientId;
+              const clientConfig = await db.select().from(agentConfigTable).where(eq(agentConfigTable.clientId, resolvedClientId)).limit(1);
               if (clientConfig[0]) effectiveConfig = clientConfig[0];
             }
           }
@@ -162,10 +165,11 @@ Rules:
             ? `${basePrompt}\n\nIMPORTANT — Special instructions for this specific call: ${input.custom_topic}`
             : basePrompt;
 
-          // Insert call record
+          // Insert call record with clientId so it appears in the client portal
           const inserted = await db
             .insert(callsTable)
             .values({
+              clientId: resolvedClientId,
               contactId: contactId ?? null,
               contactName: contactName ?? null,
               contactPhone,

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { eq, desc, and, isNull } from "drizzle-orm";
+import { eq, desc, and, isNull, inArray } from "drizzle-orm";
 import crypto from "crypto";
 import {
   db, clientsTable, contactsTable, callsTable, bookingsTable,
@@ -341,8 +341,7 @@ router.post("/admin/clients/:id/calls/sync", async (req, res) => {
 
   const inProgress = await db.select().from(callsTable)
     .where(and(eq(callsTable.clientId, clientId),
-      // Get both in-progress and queued calls
-      eq(callsTable.status, "in-progress")))
+      inArray(callsTable.status, ["in-progress", "queued"])))
     .limit(20);
 
   let synced = 0;
