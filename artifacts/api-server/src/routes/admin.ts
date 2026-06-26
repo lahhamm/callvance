@@ -12,6 +12,12 @@ const router = Router();
 router.use(adminAuth);
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+// Claude sometimes wraps JSON in ```json ... ``` — strip fences before parsing
+function parseClaudeJSON<T>(text: string): T {
+  const stripped = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
+  return JSON.parse(stripped) as T;
+}
 const BLAND_API_KEY = process.env.BLAND_AI_API_KEY;
 const BLAND_BASE_URL = "https://api.bland.ai/v1";
 
@@ -190,6 +196,71 @@ router.get("/admin/clients/:id/calls", async (req, res) => {
   res.json(calls.map(serializeCall));
 });
 
+// ── POST /admin/clients/:id/calls/:callId/analyze — re-run AI analysis on a completed call ──
+router.post("/admin/clients/:id/calls/:callId/analyze", async (req, res) => {
+  const clientId = Number(req.params.id);
+  const callId = Number(req.params.callId);
+  const calls = await db.select().from(callsTable).where(and(eq(callsTable.id, callId), eq(callsTable.clientId, clientId))).limit(1);
+  const call = calls[0];
+  if (!call) { res.status(404).json({ error: "Call not found" }); return; }
+
+  const analysisText = call.transcript || call.summary;
+  if (!analysisText) { res.status(400).json({ error: "No transcript or summary to analyze" }); return; }
+
+  const updateData: Record<string, unknown> = {};
+
+  // AI summary + key insights + lead score
+  try {
+    const aiResp = await anthropic.messages.create({
+      model: "claude-haiku-4-5",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: `Analyze this phone call. Extract:\n1. A 1-2 sentence SUMMARY.\n2. Up to 4 KEY INSIGHTS (5-8 words each).\n3. LEAD SCORE: "Hot", "Warm", or "Cold".\nRespond ONLY with JSON: {"summary":"...","keyInsights":["..."],"leadScore":"Hot"}\n\nCALL:\n${analysisText.slice(0, 3000)}` }],
+    });
+    const textBlock = aiResp.content.find(b => b.type === "text");
+    if (textBlock && textBlock.type === "text") {
+      const parsed = parseClaudeJSON<{ summary?: string; keyInsights?: string[]; leadScore?: string }>(textBlock.text);
+      if (parsed.summary) updateData.summary = parsed.summary;
+      if (Array.isArray(parsed.keyInsights) && parsed.keyInsights.length > 0) updateData.keyInsights = JSON.stringify(parsed.keyInsights.slice(0, 4));
+      if (parsed.leadScore && ["Hot","Warm","Cold"].includes(parsed.leadScore)) updateData.leadScore = parsed.leadScore;
+    }
+  } catch (err) { console.error("[analyze] AI summary failed:", err); }
+
+  // Extract booking if none exists for this call
+  const existingBooking = await db.select().from(bookingsTable).where(eq(bookingsTable.callId, callId)).limit(1);
+  let bookingCreated = false;
+  if (!existingBooking[0]) {
+    try {
+      const bookingResp = await anthropic.messages.create({
+        model: "claude-haiku-4-5",
+        max_tokens: 256,
+        messages: [{ role: "user", content: `Did this phone call result in a confirmed appointment/booking?\nIf YES, extract the date+time as ISO 8601 (today is ${new Date().toISOString().slice(0, 10)}).\nIf NO confirmed appointment, return null.\nRespond ONLY with JSON: {"scheduledAt":"2026-06-26T19:00:00.000Z","notes":"..."} or {"scheduledAt":null}\n\nCALL:\n${analysisText.slice(0, 2000)}` }],
+      });
+      const bBlock = bookingResp.content.find(b => b.type === "text");
+      if (bBlock && bBlock.type === "text") {
+        const bp = parseClaudeJSON<{ scheduledAt?: string | null; notes?: string }>(bBlock.text);
+        if (bp.scheduledAt) {
+          const scheduledAt = new Date(bp.scheduledAt);
+          if (!isNaN(scheduledAt.getTime())) {
+            await db.insert(bookingsTable).values({
+              clientId, contactId: call.contactId ?? undefined,
+              contactName: call.contactName, contactPhone: call.contactPhone,
+              callId, scheduledAt, notes: bp.notes ?? null, status: "confirmed",
+            });
+            bookingCreated = true;
+          }
+        }
+      }
+    } catch (err) { console.error("[analyze] Booking extraction failed:", err); }
+  }
+
+  if (Object.keys(updateData).length > 0) {
+    await db.update(callsTable).set(updateData as Partial<typeof callsTable.$inferSelect>).where(eq(callsTable.id, callId));
+  }
+
+  const updated = await db.select().from(callsTable).where(eq(callsTable.id, callId)).limit(1);
+  res.json({ call: serializeCall(updated[0]), bookingCreated });
+});
+
 router.post("/admin/clients/:id/calls/initiate", async (req, res) => {
   const clientId = Number(req.params.id);
   const { contactId } = req.body as { contactId: number };
@@ -286,33 +357,74 @@ router.post("/admin/clients/:id/calls/sync", async (req, res) => {
         status: isCompleted ? "completed" : "failed",
         endedAt: new Date(),
       };
-      if (data.call_length) updateData.durationSeconds = Math.round(data.call_length);
+      // BlandAI call_length is in minutes — convert to seconds
+      if (data.call_length) updateData.durationSeconds = Math.round(data.call_length * 60);
 
       let transcriptText: string | undefined;
       if (data.transcript) {
         transcriptText = typeof data.transcript === "string"
           ? data.transcript
-          : (data.transcript as Array<{ user: string; text: string }>).map(t => `${t.user}: ${t.text}`).join("\n");
-        updateData.transcript = transcriptText;
+          : (data.transcript as Array<{ user: string; text: string }>)
+              .filter(t => t.text?.trim())
+              .map(t => `${t.user}: ${t.text}`)
+              .join("\n");
+        if (transcriptText.trim()) updateData.transcript = transcriptText;
       }
       if (data.summary) updateData.summary = data.summary;
 
-      // Generate AI summary if completing with a transcript
-      if (isCompleted && transcriptText && !call.keyInsights) {
+      // Text to analyze — prefer full transcript, fall back to BlandAI summary
+      const analysisText = transcriptText?.trim() || data.summary || null;
+
+      if (isCompleted && analysisText) {
+        // AI summary + key insights + lead score
+        if (!call.keyInsights) {
+          try {
+            const aiResp = await anthropic.messages.create({
+              model: "claude-haiku-4-5",
+              max_tokens: 1024,
+              messages: [{ role: "user", content: `Analyze this phone call. Extract:\n1. A 1-2 sentence SUMMARY.\n2. Up to 4 KEY INSIGHTS (5-8 words each).\n3. LEAD SCORE: "Hot", "Warm", or "Cold".\nRespond ONLY with JSON: {"summary":"...","keyInsights":["..."],"leadScore":"Hot"}\n\nCALL:\n${analysisText.slice(0, 3000)}` }],
+            });
+            const textBlock = aiResp.content.find(b => b.type === "text");
+            if (textBlock && textBlock.type === "text") {
+              const parsed = parseClaudeJSON<{ summary?: string; keyInsights?: string[]; leadScore?: string }>(textBlock.text);
+              if (parsed.summary) updateData.summary = parsed.summary;
+              if (Array.isArray(parsed.keyInsights) && parsed.keyInsights.length > 0) updateData.keyInsights = JSON.stringify(parsed.keyInsights.slice(0, 4));
+              if (parsed.leadScore && ["Hot","Warm","Cold"].includes(parsed.leadScore)) updateData.leadScore = parsed.leadScore;
+            }
+          } catch { /* skip if Claude fails */ }
+        }
+
+        // Extract booking if none already exists for this call
         try {
-          const aiResp = await anthropic.messages.create({
-            model: "claude-haiku-4-5",
-            max_tokens: 1024,
-            messages: [{ role: "user", content: `Analyze this phone call transcript. Extract:\n1. A 1-2 sentence SUMMARY.\n2. Up to 4 KEY INSIGHTS (5-8 words each).\n3. LEAD SCORE: "Hot", "Warm", or "Cold".\nRespond ONLY with JSON: {"summary":"...","keyInsights":["..."],"leadScore":"Hot"}\n\nTRANSCRIPT:\n${transcriptText.slice(0, 3000)}` }],
-          });
-          const textBlock = aiResp.content.find(b => b.type === "text");
-          if (textBlock && textBlock.type === "text") {
-            const parsed = JSON.parse(textBlock.text.trim()) as { summary?: string; keyInsights?: string[]; leadScore?: string };
-            if (parsed.summary) updateData.summary = parsed.summary;
-            if (Array.isArray(parsed.keyInsights) && parsed.keyInsights.length > 0) updateData.keyInsights = JSON.stringify(parsed.keyInsights.slice(0, 4));
-            if (parsed.leadScore && ["Hot","Warm","Cold"].includes(parsed.leadScore)) updateData.leadScore = parsed.leadScore;
+          const existingBooking = await db.select().from(bookingsTable).where(eq(bookingsTable.callId, call.id)).limit(1);
+          if (!existingBooking[0]) {
+            const bookingResp = await anthropic.messages.create({
+              model: "claude-haiku-4-5",
+              max_tokens: 256,
+              messages: [{ role: "user", content: `Did this phone call result in a confirmed appointment/booking?\nIf YES, extract the date+time as ISO 8601 (today is ${new Date().toISOString().slice(0, 10)}).\nIf NO appointment was confirmed, return null.\nRespond ONLY with JSON: {"scheduledAt":"2026-06-26T19:00:00.000Z","notes":"..."} or {"scheduledAt":null}\n\nCALL:\n${analysisText.slice(0, 2000)}` }],
+            });
+            const bBlock = bookingResp.content.find(b => b.type === "text");
+            if (bBlock && bBlock.type === "text") {
+              const bp = parseClaudeJSON<{ scheduledAt?: string | null; notes?: string }>(bBlock.text);
+              if (bp.scheduledAt) {
+                const scheduledAt = new Date(bp.scheduledAt);
+                if (!isNaN(scheduledAt.getTime())) {
+                  await db.insert(bookingsTable).values({
+                    clientId,
+                    contactId: call.contactId ?? undefined,
+                    contactName: call.contactName,
+                    contactPhone: call.contactPhone,
+                    callId: call.id,
+                    scheduledAt,
+                    notes: bp.notes ?? null,
+                    status: "confirmed",
+                  });
+                  console.log(`[sync] Auto-created booking for call ${call.id} at ${scheduledAt.toISOString()}`);
+                }
+              }
+            }
           }
-        } catch { /* skip AI if it fails */ }
+        } catch { /* skip booking extraction if it fails */ }
       }
 
       await db.update(callsTable).set(updateData as Partial<typeof callsTable.$inferSelect>).where(eq(callsTable.id, call.id));
