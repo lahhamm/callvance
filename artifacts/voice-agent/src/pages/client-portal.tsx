@@ -11,7 +11,7 @@ type Call = {
 };
 type Booking = {
   id: number; contactName?: string; contactPhone?: string;
-  scheduledAt: string; notes?: string;
+  scheduledAt: string; notes?: string; timezone?: string | null;
 };
 
 function apiFetch(path: string) {
@@ -33,11 +33,14 @@ function LeadScoreBadge({ score }: { score?: string | null }) {
   );
 }
 
-function formatDate(iso: string) {
-  return new Date(iso).toLocaleString("en-US", {
-    weekday: "short", month: "short", day: "numeric",
+function formatDate(iso: string, timezone?: string | null) {
+  const tz = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const time = new Date(iso).toLocaleString("en-US", {
+    timeZone: tz, weekday: "short", month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit",
   });
+  const abbr = new Date(iso).toLocaleTimeString("en-US", { timeZone: tz, timeZoneName: "short" }).split(" ").pop() ?? "";
+  return `${time} ${abbr}`;
 }
 
 export default function ClientPortal() {
@@ -178,9 +181,9 @@ export default function ClientPortal() {
                 <div key={b.id} className="bg-white border border-gray-200 rounded-xl p-5 flex items-start gap-4">
                   <div className="w-12 h-12 bg-blue-600 text-white rounded-xl flex flex-col items-center justify-center shrink-0">
                     <div className="text-[10px] font-semibold uppercase leading-none">
-                      {new Date(b.scheduledAt).toLocaleDateString("en-US", { month: "short" })}
+                      {new Date(b.scheduledAt).toLocaleDateString("en-US", { timeZone: b.timezone ?? undefined, month: "short" })}
                     </div>
-                    <div className="text-lg font-bold leading-tight">{new Date(b.scheduledAt).getDate()}</div>
+                    <div className="text-lg font-bold leading-tight">{new Date(b.scheduledAt).toLocaleDateString("en-US", { timeZone: b.timezone ?? undefined, day: "numeric" })}</div>
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-3 flex-wrap">
@@ -193,7 +196,7 @@ export default function ClientPortal() {
                     </div>
                     <div className="text-sm text-gray-600 mt-1 flex items-center gap-1.5">
                       <Clock className="w-3.5 h-3.5 text-gray-400" />
-                      {formatDate(b.scheduledAt)}
+                      {formatDate(b.scheduledAt, b.timezone)}
                     </div>
                     {b.notes && <p className="text-sm text-gray-400 mt-1.5 leading-relaxed">{b.notes}</p>}
                   </div>

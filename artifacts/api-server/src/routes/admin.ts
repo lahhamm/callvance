@@ -485,8 +485,12 @@ router.post("/admin/clients/:id/calls/bulk", async (req, res) => {
 
 router.get("/admin/clients/:id/bookings", async (req, res) => {
   const clientId = Number(req.params.id);
-  const bookings = await db.select().from(bookingsTable).where(eq(bookingsTable.clientId, clientId)).orderBy(desc(bookingsTable.scheduledAt));
-  res.json(bookings.map(serializeBooking));
+  const [bookings, availRows] = await Promise.all([
+    db.select().from(bookingsTable).where(eq(bookingsTable.clientId, clientId)).orderBy(desc(bookingsTable.scheduledAt)),
+    db.select().from(availabilityTable).where(eq(availabilityTable.clientId, clientId)).limit(1),
+  ]);
+  const timezone = availRows[0]?.timezone ?? null;
+  res.json(bookings.map(b => ({ ...serializeBooking(b), timezone })));
 });
 
 router.post("/admin/clients/:id/bookings", async (req, res) => {
@@ -695,9 +699,17 @@ router.get("/admin/contacts", async (_req, res) => {
 
 router.get("/admin/bookings", async (_req, res) => {
   const bookings = await db.select().from(bookingsTable).orderBy(desc(bookingsTable.scheduledAt)).limit(200);
-  const clients = await db.select().from(clientsTable);
+  const [clients, availRows] = await Promise.all([
+    db.select().from(clientsTable),
+    db.select().from(availabilityTable),
+  ]);
   const clientMap = new Map(clients.map(c => [c.id, c.name]));
-  res.json(bookings.map(b => ({ ...serializeBooking(b), clientName: b.clientId ? (clientMap.get(b.clientId) ?? null) : null })));
+  const tzMap = new Map(availRows.map(a => [a.clientId, a.timezone]));
+  res.json(bookings.map(b => ({
+    ...serializeBooking(b),
+    clientName: b.clientId ? (clientMap.get(b.clientId) ?? null) : null,
+    timezone: b.clientId ? (tzMap.get(b.clientId) ?? null) : null,
+  })));
 });
 
 // ── GLOBAL CALLS FEED ─────────────────────────────────────────────────────────

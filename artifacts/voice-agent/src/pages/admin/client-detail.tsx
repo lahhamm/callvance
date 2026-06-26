@@ -19,7 +19,17 @@ import { useToast } from "@/hooks/use-toast";
 type Client = { id: number; name: string; businessType: string; phone: string; isActive: boolean; accessToken: string; portalPassword?: string };
 type Contact = { id: number; name: string; phone: string; email?: string; company?: string; status: string; lastCalledAt?: string };
 type Call = { id: number; contactName?: string; contactPhone: string; status: string; summary?: string; keyInsights?: string; leadScore?: string; durationSeconds?: number; createdAt: string; transcript?: string };
-type Booking = { id: number; contactName?: string; contactPhone?: string; scheduledAt: string; status: string; notes?: string };
+type Booking = { id: number; contactName?: string; contactPhone?: string; scheduledAt: string; status: string; notes?: string; timezone?: string | null };
+
+function formatInTz(iso: string, timezone?: string | null) {
+  const tz = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const time = new Date(iso).toLocaleString("en-US", {
+    timeZone: tz, weekday: "short", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+  const abbr = new Date(iso).toLocaleTimeString("en-US", { timeZone: tz, timeZoneName: "short" }).split(" ").pop() ?? "";
+  return `${time} ${abbr}`;
+}
 type AgentConfig = { id: number; agentName: string; voice: string; prompt: string; firstMessage: string; maxDuration: number; qualificationCriteria?: string };
 type Availability = { id: number; timezone: string; notificationEmail?: string; availableDays: number[]; startTime: string; endTime: string; slotDurationMinutes: number };
 
@@ -292,7 +302,7 @@ function BookingsTab({ clientId, bookings, qc, toast }: { clientId: number; book
                 <div key={b.id} className={`px-4 py-3 flex items-center gap-3 ${label !== "Upcoming" ? "opacity-60" : ""}`}>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2"><span className="font-medium text-sm">{b.contactName || "Unknown"}</span><Badge variant={b.status === "confirmed" ? "default" : "secondary"} className="text-xs">{b.status}</Badge></div>
-                    <div className="text-xs text-primary mt-0.5">{new Date(b.scheduledAt).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
+                    <div className="text-xs text-primary mt-0.5">{formatInTz(b.scheduledAt, b.timezone)}</div>
                     {b.notes && <div className="text-xs text-muted-foreground mt-0.5">{b.notes}</div>}
                   </div>
                   {b.status === "confirmed" && new Date(b.scheduledAt) > new Date() && (

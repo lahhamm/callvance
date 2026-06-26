@@ -9,7 +9,34 @@ type Booking = {
   id: number; clientId?: number; clientName?: string;
   contactName?: string; contactPhone?: string;
   scheduledAt: string; status: string; notes?: string; createdAt: string;
+  timezone?: string | null;
 };
+
+function formatInTz(iso: string, timezone?: string | null) {
+  const tz = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return new Date(iso).toLocaleString("en-US", {
+    timeZone: tz, weekday: "short", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+function formatMonthInTz(iso: string, timezone?: string | null) {
+  const tz = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return new Date(iso).toLocaleDateString("en-US", { timeZone: tz, month: "short" });
+}
+function getDayInTz(iso: string, timezone?: string | null) {
+  const tz = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return new Date(iso).toLocaleDateString("en-US", { timeZone: tz, day: "numeric" });
+}
+function formatTimeInTz(iso: string, timezone?: string | null) {
+  const tz = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return new Date(iso).toLocaleTimeString("en-US", {
+    timeZone: tz, hour: "2-digit", minute: "2-digit",
+  });
+}
+function getTzAbbr(iso: string, timezone?: string | null) {
+  const tz = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return new Date(iso).toLocaleTimeString("en-US", { timeZone: tz, timeZoneName: "short" }).split(" ").pop() ?? "";
+}
 
 function apiFetch(path: string) {
   return fetch(`/api${path}`, { headers: { ...authHeader() } }).then(r => r.json());
@@ -83,13 +110,12 @@ export default function BookingsFeed() {
           </div>
         ) : (
           displayed.map(b => {
-            const dt = new Date(b.scheduledAt);
-            const isPast = dt < now;
+            const isPast = new Date(b.scheduledAt) < now;
             return (
               <div key={b.id} className={`px-4 py-3.5 flex items-center gap-3 hover:bg-secondary/20 transition-colors ${isPast || b.status === "cancelled" ? "opacity-50" : ""}`}>
                 <div className="w-12 shrink-0 text-center">
-                  <div className="text-xs font-semibold text-primary">{dt.toLocaleDateString("en-US", { month: "short" })}</div>
-                  <div className="text-lg font-bold text-foreground leading-none">{dt.getDate()}</div>
+                  <div className="text-xs font-semibold text-primary">{formatMonthInTz(b.scheduledAt, b.timezone)}</div>
+                  <div className="text-lg font-bold text-foreground leading-none">{getDayInTz(b.scheduledAt, b.timezone)}</div>
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2.5 flex-wrap">
@@ -101,7 +127,8 @@ export default function BookingsFeed() {
                   </div>
                   <div className="flex items-center gap-1.5 mt-0.5 text-xs text-muted-foreground">
                     <Clock className="w-3 h-3" />
-                    {dt.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}
+                    {formatTimeInTz(b.scheduledAt, b.timezone)}
+                    <span className="text-xs opacity-60">{getTzAbbr(b.scheduledAt, b.timezone)}</span>
                     {b.notes && <span className="ml-2 truncate">· {b.notes}</span>}
                   </div>
                 </div>

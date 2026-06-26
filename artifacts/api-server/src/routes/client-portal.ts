@@ -33,10 +33,15 @@ router.get("/client/:token/bookings", async (req, res) => {
   const client = await resolveClient(req.params.token);
   if (!client) { res.status(404).json({ error: "Not found" }); return; }
   const now = new Date();
-  const bookings = await db.select().from(bookingsTable)
-    .where(and(eq(bookingsTable.clientId, client.id), gte(bookingsTable.scheduledAt, now), eq(bookingsTable.status, "confirmed")))
-    .orderBy(bookingsTable.scheduledAt);
-  res.json(bookings.map(serializeBooking));
+  const { availabilityTable } = await import("@workspace/db");
+  const [bookings, availRows] = await Promise.all([
+    db.select().from(bookingsTable)
+      .where(and(eq(bookingsTable.clientId, client.id), gte(bookingsTable.scheduledAt, now), eq(bookingsTable.status, "confirmed")))
+      .orderBy(bookingsTable.scheduledAt),
+    db.select().from(availabilityTable).where(eq(availabilityTable.clientId, client.id)).limit(1),
+  ]);
+  const timezone = availRows[0]?.timezone ?? null;
+  res.json(bookings.map(b => ({ ...serializeBooking(b), timezone })));
 });
 
 export default router;
