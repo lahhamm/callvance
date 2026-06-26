@@ -311,14 +311,21 @@ router.post("/admin/clients/:id/calls/initiate", async (req, res) => {
   let task = config.qualificationCriteria?.trim()
     ? `${config.prompt}\n\nQualification Criteria:\n${config.qualificationCriteria}`
     : config.prompt;
+  console.log(`[admin/initiate] Base task length=${task.length} chars, qualificationCriteria="${config.qualificationCriteria?.slice(0, 60) ?? "none"}"`);
   const avail = await ensureClientAvailability(clientId);
+  console.log(`[admin/initiate] Availability: preventOverlaps=${avail.preventOverlaps} timezone=${avail.timezone} days=${avail.availableDays}`);
   if (avail.preventOverlaps) {
     const nextDays = getNextAvailableDays(5, avail);
+    console.log(`[admin/initiate] Next available days: ${nextDays.join(", ")}`);
     const allSlots: Date[] = [];
     for (const day of nextDays) { allSlots.push(...await computeSlots(clientId, day, avail)); }
+    console.log(`[admin/initiate] Total free slots: ${allSlots.length}`);
     const slotsText = formatSlotsForPrompt(allSlots, avail.timezone);
-    if (slotsText) task = `${task}\n\n${slotsText}`;
+    if (slotsText) { task = `${task}\n\n${slotsText}`; console.log(`[admin/initiate] Slots appended, final task length=${task.length}`); }
+    else { console.log(`[admin/initiate] No slots available — task unchanged`); }
   }
+  console.log(`[admin/initiate] REPLIT_DEV_DOMAIN="${process.env.REPLIT_DEV_DOMAIN ?? "NOT SET"}" webhookUrl="${webhookUrl ?? "NONE"}"`);
+  console.log(`[admin/initiate] Full task being sent to BlandAI:\n---\n${task}\n---`);
   const blandPayload: Record<string, unknown> = {
     phone_number: contact[0].phone, task, voice: config.voice,
     first_sentence: config.firstMessage, max_duration: config.maxDuration,
@@ -333,14 +340,16 @@ router.post("/admin/clients/:id/calls/initiate", async (req, res) => {
     body: JSON.stringify(blandPayload),
   });
 
+  const blandRawText = await blandRes.text();
+  console.log(`[admin/initiate] BlandAI response status=${blandRes.status} body=${blandRawText.slice(0, 500)}`);
   if (!blandRes.ok) {
     await db.update(callsTable).set({ status: "failed" }).where(eq(callsTable.id, callRecord.id));
-    res.status(502).json({ error: "BlandAI error" }); return;
+    res.status(502).json({ error: "BlandAI error", detail: blandRawText.slice(0, 200) }); return;
   }
 
-  const blandData = (await blandRes.json()) as { call_id?: string; c_id?: string; id?: string };
+  const blandData = JSON.parse(blandRawText) as { call_id?: string; c_id?: string; id?: string };
   const blandCallId = blandData.call_id ?? blandData.c_id ?? blandData.id ?? null;
-  console.log(`[initiate] BlandAI response call_id=${blandCallId}`, JSON.stringify(blandData).slice(0, 200));
+  console.log(`[admin/initiate] blandCallId=${blandCallId} — saving to call record id=${callRecord.id}`);
   await db.update(callsTable).set({ blandCallId, status: "in-progress", startedAt: new Date() }).where(eq(callsTable.id, callRecord.id));
   await db.update(contactsTable).set({ lastCalledAt: new Date(), status: "contacted" }).where(eq(contactsTable.id, contactId));
 
@@ -498,13 +507,17 @@ router.post("/admin/clients/:id/calls/bulk", async (req, res) => {
         ? `${config.prompt}\n\nQualification Criteria:\n${config.qualificationCriteria}`
         : config.prompt;
       const bulkAvail = await ensureClientAvailability(clientId);
+      console.log(`[admin/bulk] contactId=${contactId} preventOverlaps=${bulkAvail.preventOverlaps} webhookUrl="${webhookUrl ?? "NONE"}"`);
       if (bulkAvail.preventOverlaps) {
         const nextDays = getNextAvailableDays(5, bulkAvail);
         const allSlots: Date[] = [];
         for (const day of nextDays) { allSlots.push(...await computeSlots(clientId, day, bulkAvail)); }
+        console.log(`[admin/bulk] contactId=${contactId} free slots=${allSlots.length}`);
         const slotsText = formatSlotsForPrompt(allSlots, bulkAvail.timezone);
-        if (slotsText) bulkTask = `${bulkTask}\n\n${slotsText}`;
+        if (slotsText) { bulkTask = `${bulkTask}\n\n${slotsText}`; console.log(`[admin/bulk] Slots appended, task length=${bulkTask.length}`); }
+        else { console.log(`[admin/bulk] No slots — task unchanged`); }
       }
+      console.log(`[admin/bulk] Full task for contactId=${contactId}:\n---\n${bulkTask}\n---`);
       const blandPayload: Record<string, unknown> = {
         phone_number: contact[0].phone, task: bulkTask, voice: config.voice,
         first_sentence: config.firstMessage, max_duration: config.maxDuration,

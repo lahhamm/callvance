@@ -1,0 +1,37 @@
+
+There are two critical broken features that need to be fixed permanently. Read the entire codebase before touching anything so you understand exactly how data flows before making changes.
+Problem 1: Availability slots not being injected into BlandAI calls
+When a call is initiated the agent is not receiving available time slots. Trace the exact code path from POST /api/admin/clients/:id/calls/initiate all the way to the BlandAI API call and find where the availability injection is supposed to happen. Then verify:
+
+The availability_settings row for that client actually exists and has correct data
+The slot generation logic is actually being called before the BlandAI request is sent
+The generated slots are actually being appended to the task string
+The final task string being sent to BlandAI actually contains the slot list — log it to the console so we can see exactly what is being sent
+
+If the slot injection code exists but is not working, fix it. If it was never wired into the initiate route, wire it in now. Do not assume it is working — verify it by logging the full payload sent to BlandAI every time a call is initiated.
+Problem 2: No summary, no transcript, no lead score after calls complete
+After a call completes the calls table is not being updated with the transcript, AI summary, key insights, or lead score. This means either:
+
+BlandAI is not hitting the webhook at all
+The webhook is being hit but failing silently before it processes the transcript
+The webhook is processing but Claude is not running or is failing
+Claude is running but the result is not being saved to the database
+
+Fix this by doing all of the following:
+
+Add console.log at the very start of the webhook handler that logs the full raw request body from BlandAI every single time it is hit, before any processing happens
+Add console.log after every major step: call lookup, status mapping, transcript extraction, Claude analysis, database write
+Find the call record by blandCallId — log whether it was found or not
+Log the exact transcript received from BlandAI before passing it to Claude
+Log the exact response from Claude before saving it
+Log the result of every database write and whether it succeeded
+
+Then trace the background sync (syncInProgressCalls) the same way — add logs at every step so we can see exactly what it is doing every 30 seconds.
+After adding all logs, also verify:
+
+The webhook URL being sent to BlandAI in the call initiation payload is the correct live Replit URL, not localhost or an old URL
+The webhook endpoint POST /api/calls/webhook is unprotected and reachable publicly without any auth header
+The blandCallId is being saved to the calls table when the call is initiated, not just when the webhook fires
+Claude is being called with a non-empty transcript — if the transcript is empty or null Claude should not be called and the call should be marked failed
+
+Do not remove any existing logs. Do not skip any of these steps. Fix every issue you find. When done give me a summary of every change made and what the root cause was for each broken feature.

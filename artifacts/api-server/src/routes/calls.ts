@@ -8,6 +8,7 @@ import {
 } from "@workspace/api-zod";
 import { sendBookingEmail } from "./bookings";
 import { adminAuth } from "../middlewares/admin-auth";
+import { computeSlots, getNextAvailableDays, formatSlotsForPrompt } from "../lib/availability-slots";
 
 const router = Router();
 const BLAND_API_KEY = process.env.BLAND_AI_API_KEY;
@@ -29,33 +30,63 @@ function parseClaudeJSON<T>(text: string): T {
 }
 
 async function initiateCallForContact(contactId: number) {
+  console.log(`[initiate] Looking up contact id=${contactId}`);
   const contact = await db.select().from(contactsTable).where(eq(contactsTable.id, contactId)).limit(1);
   if (!contact[0]) throw new Error(`Contact ${contactId} not found`);
+  console.log(`[initiate] Found contact name="${contact[0].name}" phone="${contact[0].phone}" clientId=${contact[0].clientId}`);
 
-  const configQuery = contact[0].clientId
-    ? db.select().from(agentConfigTable).where(eq(agentConfigTable.clientId, contact[0].clientId)).limit(1)
+  const clientId = contact[0].clientId ?? null;
+
+  const configQuery = clientId
+    ? db.select().from(agentConfigTable).where(eq(agentConfigTable.clientId, clientId)).limit(1)
     : db.select().from(agentConfigTable).limit(1);
   const configRows = await configQuery;
   const config = configRows[0];
   if (!config) throw new Error("Agent config not found — please configure the agent for this client");
+  console.log(`[initiate] Agent config found: agentName="${config.agentName}" voice="${config.voice}"`);
   if (!BLAND_API_KEY) throw new Error("BLAND_AI_API_KEY not configured");
 
   const inserted = await db.insert(callsTable).values({
-    clientId: contact[0].clientId ?? null,
+    clientId,
     contactId: contact[0].id,
     contactName: contact[0].name,
     contactPhone: contact[0].phone,
     status: "queued",
   }).returning();
   const callRecord = inserted[0];
+  console.log(`[initiate] Created call record id=${callRecord.id}`);
 
   const replitDomain = process.env.REPLIT_DEV_DOMAIN;
   const webhookUrl = replitDomain ? `https://${replitDomain}/api/calls/webhook` : null;
-  console.log(`[calls] Initiating call id=${callRecord.id} webhook=${webhookUrl ?? "NONE"}`);
+  console.log(`[initiate] REPLIT_DEV_DOMAIN="${replitDomain ?? "NOT SET"}" webhookUrl="${webhookUrl ?? "NONE — webhook will NOT be sent"}"`);
 
-  const task = config.qualificationCriteria?.trim()
+  let task = config.qualificationCriteria?.trim()
     ? `${config.prompt}\n\nQualification Criteria:\n${config.qualificationCriteria}`
     : config.prompt;
+  console.log(`[initiate] Base task built, length=${task.length} chars`);
+
+  // Inject available slots if preventOverlaps is enabled
+  if (clientId) {
+    const availRows = await db.select().from(availabilityTable).where(eq(availabilityTable.clientId, clientId)).limit(1);
+    const avail = availRows[0];
+    console.log(`[initiate] Availability row found=${!!avail} preventOverlaps=${avail?.preventOverlaps}`);
+    if (avail && avail.preventOverlaps) {
+      const nextDays = getNextAvailableDays(5, avail);
+      console.log(`[initiate] Next ${nextDays.length} available days: ${nextDays.join(", ")}`);
+      const allSlots: Date[] = [];
+      for (const day of nextDays) { allSlots.push(...await computeSlots(clientId, day, avail)); }
+      console.log(`[initiate] Total free slots computed: ${allSlots.length}`);
+      const slotsText = formatSlotsForPrompt(allSlots, avail.timezone);
+      if (slotsText) {
+        task = `${task}\n\n${slotsText}`;
+        console.log(`[initiate] Slots appended to task. New task length=${task.length} chars`);
+      } else {
+        console.log(`[initiate] No slots available — slotsText is empty, task unchanged`);
+      }
+    }
+  } else {
+    console.log(`[initiate] No clientId on contact — skipping availability slot injection`);
+  }
 
   const blandPayload: Record<string, unknown> = {
     phone_number: contact[0].phone,
@@ -69,24 +100,32 @@ async function initiateCallForContact(contactId: number) {
   };
   if (webhookUrl) blandPayload.webhook = webhookUrl;
 
+  console.log(`[initiate] Sending to BlandAI — phone="${contact[0].phone}" voice="${config.voice}" max_duration=${config.maxDuration} webhook="${blandPayload.webhook ?? "NONE"}"`);
+  console.log(`[initiate] Full task being sent to BlandAI:\n---\n${task}\n---`);
+
   const blandRes = await fetch(`${BLAND_BASE_URL}/calls`, {
     method: "POST",
     headers: { Authorization: BLAND_API_KEY, "Content-Type": "application/json" },
     body: JSON.stringify(blandPayload),
   });
 
+  const blandRawText = await blandRes.text();
+  console.log(`[initiate] BlandAI response status=${blandRes.status} body=${blandRawText.slice(0, 500)}`);
+
   if (!blandRes.ok) {
-    const err = await blandRes.text();
     await db.update(callsTable).set({ status: "failed" }).where(eq(callsTable.id, callRecord.id));
-    throw new Error(`BlandAI error: ${err}`);
+    throw new Error(`BlandAI error: ${blandRawText}`);
   }
 
-  const blandData = (await blandRes.json()) as { call_id?: string; c_id?: string; id?: string };
+  const blandData = JSON.parse(blandRawText) as { call_id?: string; c_id?: string; id?: string };
   const blandCallId = blandData.call_id ?? blandData.c_id ?? blandData.id ?? null;
+  console.log(`[initiate] BlandAI call_id=${blandCallId}`);
+
   const updated = await db.update(callsTable)
     .set({ blandCallId, status: "in-progress", startedAt: new Date() })
     .where(eq(callsTable.id, callRecord.id))
     .returning();
+  console.log(`[initiate] Call record id=${callRecord.id} updated: blandCallId=${blandCallId} status=in-progress`);
 
   await db.update(contactsTable)
     .set({ lastCalledAt: new Date(), status: "contacted" })
@@ -101,7 +140,9 @@ async function extractBookingFromTranscript(
   contactPhone: string | null,
   contactId: number | null,
   callId: number,
+  clientId: number | null,
 ): Promise<void> {
+  console.log(`[booking] Extracting booking from transcript for callId=${callId} contactName="${contactName}" clientId=${clientId}`);
   try {
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5",
@@ -121,15 +162,20 @@ ${transcript.slice(0, 3000)}`,
     });
 
     const text = response.content.find(b => b.type === "text");
-    if (!text || text.type !== "text") return;
+    if (!text || text.type !== "text") { console.log(`[booking] Claude returned no text block for callId=${callId}`); return; }
+    console.log(`[booking] Claude raw booking response for callId=${callId}: ${text.text.slice(0, 200)}`);
 
     const parsed = parseClaudeJSON<{ scheduledAt: string | null; notes?: string }>(text.text);
-    if (!parsed.scheduledAt) return;
+    if (!parsed.scheduledAt) { console.log(`[booking] No appointment confirmed in transcript for callId=${callId}`); return; }
 
     const scheduledAt = new Date(parsed.scheduledAt);
-    if (isNaN(scheduledAt.getTime()) || scheduledAt < new Date()) return;
+    if (isNaN(scheduledAt.getTime()) || scheduledAt < new Date()) {
+      console.log(`[booking] scheduledAt invalid or in the past: "${parsed.scheduledAt}" — skipping`);
+      return;
+    }
 
     const inserted = await db.insert(bookingsTable).values({
+      clientId: clientId ?? undefined,
       contactId: contactId ?? undefined,
       contactName,
       contactPhone,
@@ -140,10 +186,17 @@ ${transcript.slice(0, 3000)}`,
     }).returning();
 
     const booking = inserted[0];
+    console.log(`[booking] Booking created id=${booking.id} scheduledAt=${scheduledAt.toISOString()} clientId=${clientId}`);
 
-    const availRows = await db.select().from(availabilityTable).limit(1);
-    if (availRows[0]?.notificationEmail) {
-      await sendBookingEmail(booking, availRows[0].notificationEmail);
+    // Look up notification email filtered by this client
+    if (clientId) {
+      const availRows = await db.select().from(availabilityTable).where(eq(availabilityTable.clientId, clientId)).limit(1);
+      if (availRows[0]?.notificationEmail) {
+        console.log(`[booking] Sending notification email to ${availRows[0].notificationEmail}`);
+        await sendBookingEmail(booking, availRows[0].notificationEmail);
+      } else {
+        console.log(`[booking] No notification email configured for clientId=${clientId}`);
+      }
     }
 
     console.log(`[booking] Auto-created booking for ${contactName ?? contactPhone} at ${scheduledAt.toISOString()}`);
@@ -152,7 +205,8 @@ ${transcript.slice(0, 3000)}`,
   }
 }
 
-async function generateAISummary(transcript: string, contactName: string | null): Promise<{ summary: string; keyInsights: string[]; leadScore: string }> {
+async function generateAISummary(transcript: string, contactName: string | null, callId?: number): Promise<{ summary: string; keyInsights: string[]; leadScore: string }> {
+  console.log(`[ai] generateAISummary called callId=${callId ?? "?"} transcriptLength=${transcript.length} contactName="${contactName}"`);
   try {
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5",
@@ -176,36 +230,49 @@ ${transcript.slice(0, 3000)}`
     });
 
     const text = response.content.find(b => b.type === "text");
-    if (!text || text.type !== "text") return { summary: "", keyInsights: [], leadScore: "" };
+    if (!text || text.type !== "text") {
+      console.log(`[ai] Claude returned no text block callId=${callId ?? "?"}`);
+      return { summary: "", keyInsights: [], leadScore: "" };
+    }
 
+    console.log(`[ai] Claude raw summary response callId=${callId ?? "?"}: ${text.text.slice(0, 300)}`);
     const parsed = parseClaudeJSON<{ summary: string; keyInsights: string[]; leadScore: string }>(text.text);
-    return {
+    const result = {
       summary: parsed.summary || "",
       keyInsights: Array.isArray(parsed.keyInsights) ? parsed.keyInsights.slice(0, 4) : [],
       leadScore: ["Hot", "Warm", "Cold"].includes(parsed.leadScore) ? parsed.leadScore : "",
     };
+    console.log(`[ai] Summary parsed callId=${callId ?? "?"}: leadScore="${result.leadScore}" summary="${result.summary.slice(0, 80)}"`);
+    return result;
   } catch (err) {
-    console.error("[ai] generateAISummary failed:", err);
+    console.error(`[ai] generateAISummary failed callId=${callId ?? "?"}:`, err);
     return { summary: "", keyInsights: [], leadScore: "" };
   }
 }
 
 export async function syncInProgressCalls(): Promise<void> {
-  if (!BLAND_API_KEY) return;
+  if (!BLAND_API_KEY) { console.log("[poll] Skipping sync — BLAND_AI_API_KEY not set"); return; }
   try {
     const inProgress = await db.select().from(callsTable)
       .where(inArray(callsTable.status, ["in-progress", "queued"]));
 
-    if (inProgress.length === 0) return;
+    if (inProgress.length === 0) { console.log("[poll] No in-progress or queued calls to sync"); return; }
     console.log(`[poll] Syncing ${inProgress.length} in-progress call(s) with BlandAI`);
 
     for (const call of inProgress) {
-      if (!call.blandCallId) continue;
+      if (!call.blandCallId) {
+        console.log(`[poll] Skipping call id=${call.id} — no blandCallId saved yet`);
+        continue;
+      }
+      console.log(`[poll] Checking BlandAI for call id=${call.id} blandCallId=${call.blandCallId}`);
       try {
         const blandRes = await fetch(`${BLAND_BASE_URL}/calls/${call.blandCallId}`, {
           headers: { Authorization: BLAND_API_KEY },
         });
-        if (!blandRes.ok) continue;
+        if (!blandRes.ok) {
+          console.log(`[poll] BlandAI returned ${blandRes.status} for call id=${call.id} — skipping`);
+          continue;
+        }
 
         const data = (await blandRes.json()) as {
           status?: string;
@@ -213,10 +280,14 @@ export async function syncInProgressCalls(): Promise<void> {
           summary?: string;
           call_length?: number;
         };
+        console.log(`[poll] BlandAI status="${data.status}" call_length=${data.call_length ?? "?"} has_transcript=${!!data.transcript} for call id=${call.id}`);
 
         const isCompleted = data.status === "completed" || data.status === "ended";
         const isFailed = data.status === "failed" || data.status === "error" || data.status === "no-answer";
-        if (!isCompleted && !isFailed) continue;
+        if (!isCompleted && !isFailed) {
+          console.log(`[poll] Call id=${call.id} still in status="${data.status}" — no update needed`);
+          continue;
+        }
 
         const updateData: Partial<typeof callsTable.$inferSelect> = {};
         if (isCompleted) { updateData.status = "completed"; updateData.endedAt = new Date(); }
@@ -228,26 +299,36 @@ export async function syncInProgressCalls(): Promise<void> {
             ? data.transcript
             : data.transcript.map(t => `${t.user}: ${t.text}`).join("\n");
           updateData.transcript = transcriptText;
+          console.log(`[poll] Transcript extracted for call id=${call.id}: ${transcriptText.length} chars`);
+        } else {
+          console.log(`[poll] No transcript in BlandAI response for call id=${call.id}`);
         }
         if (data.call_length) updateData.durationSeconds = Math.round(data.call_length * 60);
 
         if (isCompleted && transcriptText) {
-          const aiResult = await generateAISummary(transcriptText, call.contactName);
+          console.log(`[poll] Running AI summary for call id=${call.id}`);
+          const aiResult = await generateAISummary(transcriptText, call.contactName, call.id);
           if (aiResult.summary) updateData.summary = aiResult.summary;
           if (aiResult.keyInsights.length > 0) updateData.keyInsights = JSON.stringify(aiResult.keyInsights);
           if (aiResult.leadScore) updateData.leadScore = aiResult.leadScore;
-
-          await db.update(callsTable).set(updateData).where(eq(callsTable.id, call.id));
-
-          const existingBooking = await db.select().from(bookingsTable).where(eq(bookingsTable.callId, call.id)).limit(1);
-          if (!existingBooking[0]) {
-            await extractBookingFromTranscript(transcriptText, call.contactName ?? null, call.contactPhone, call.contactId ?? null, call.id);
-          }
-        } else {
-          await db.update(callsTable).set(updateData).where(eq(callsTable.id, call.id));
+          console.log(`[poll] AI result for call id=${call.id}: leadScore="${aiResult.leadScore}" summary="${aiResult.summary.slice(0, 80)}"`);
+        } else if (isCompleted && !transcriptText) {
+          console.log(`[poll] Call id=${call.id} completed but no transcript — skipping AI summary`);
         }
 
-        console.log(`[poll] Updated call id=${call.id} → status=${updateData.status}`);
+        console.log(`[poll] Writing DB update for call id=${call.id}: status=${updateData.status} hasTranscript=${!!updateData.transcript} hasSummary=${!!updateData.summary} leadScore=${updateData.leadScore ?? "none"}`);
+        await db.update(callsTable).set(updateData).where(eq(callsTable.id, call.id));
+        console.log(`[poll] DB update done for call id=${call.id} → status=${updateData.status}`);
+
+        if (isCompleted && transcriptText) {
+          const existingBooking = await db.select().from(bookingsTable).where(eq(bookingsTable.callId, call.id)).limit(1);
+          if (!existingBooking[0]) {
+            console.log(`[poll] Attempting booking extraction for call id=${call.id}`);
+            await extractBookingFromTranscript(transcriptText, call.contactName ?? null, call.contactPhone, call.contactId ?? null, call.id, call.clientId ?? null);
+          } else {
+            console.log(`[poll] Booking already exists for call id=${call.id} — skipping extraction`);
+          }
+        }
       } catch (err) {
         console.error(`[poll] Failed to sync call id=${call.id}:`, err);
       }
@@ -322,36 +403,45 @@ router.post("/calls/webhook", async (req, res) => {
     summary?: string;
     duration?: number;
     call_length?: number;
-    metadata?: { call_db_id?: number; contact_id?: number };
+    metadata?: { call_db_id?: number; contact_id?: number; client_id?: number };
   };
 
-  console.log(`[webhook] Received: call_id=${body.call_id} status=${body.status} has_transcript=${!!body.transcript} metadata=${JSON.stringify(body.metadata)}`);
+  console.log(`[webhook] ===== INCOMING WEBHOOK =====`);
+  console.log(`[webhook] call_id="${body.call_id}" status="${body.status}" has_transcript=${!!body.transcript} transcript_length=${body.transcript?.length ?? 0} call_length=${body.call_length ?? body.duration ?? "?"} metadata=${JSON.stringify(body.metadata)}`);
 
+  // Acknowledge BlandAI immediately
   res.json({ ok: true });
 
+  // ── Step 1: Locate call record ──────────────────────────────────────────────
   let callRecord: typeof callsTable.$inferSelect | undefined;
 
   if (body.call_id) {
     const byId = await db.select().from(callsTable).where(eq(callsTable.blandCallId, body.call_id)).limit(1);
     callRecord = byId[0];
+    console.log(`[webhook] Lookup by blandCallId="${body.call_id}" → found=${!!callRecord}${callRecord ? ` (db id=${callRecord.id})` : ""}`);
   }
 
   if (!callRecord && body.metadata?.call_db_id) {
     const byMeta = await db.select().from(callsTable).where(eq(callsTable.id, body.metadata.call_db_id)).limit(1);
     callRecord = byMeta[0];
+    console.log(`[webhook] Lookup by metadata.call_db_id=${body.metadata.call_db_id} → found=${!!callRecord}`);
     if (callRecord && body.call_id && !callRecord.blandCallId) {
       await db.update(callsTable).set({ blandCallId: body.call_id }).where(eq(callsTable.id, callRecord.id));
       callRecord = { ...callRecord, blandCallId: body.call_id };
+      console.log(`[webhook] Back-filled blandCallId="${body.call_id}" on call id=${callRecord.id}`);
     }
   }
 
   if (!callRecord) {
-    console.warn(`[webhook] No call record found for call_id=${body.call_id} metadata=${JSON.stringify(body.metadata)}`);
+    console.warn(`[webhook] ❌ No call record found — call_id="${body.call_id}" metadata=${JSON.stringify(body.metadata)} — cannot process`);
     return;
   }
+  console.log(`[webhook] ✓ Call record found: db id=${callRecord.id} clientId=${callRecord.clientId} contactId=${callRecord.contactId} currentStatus="${callRecord.status}"`);
 
+  // ── Step 2: Determine new status ────────────────────────────────────────────
   const isCompleted = body.status === "completed" || body.status === "ended";
   const isFailed = body.status === "failed" || body.status === "error" || body.status === "no-answer";
+  console.log(`[webhook] Status mapping: incoming="${body.status}" → isCompleted=${isCompleted} isFailed=${isFailed}`);
 
   const updateData: Partial<typeof callsTable.$inferSelect> = {};
   if (isCompleted) { updateData.status = "completed"; updateData.endedAt = new Date(); }
@@ -361,7 +451,10 @@ router.post("/calls/webhook", async (req, res) => {
   if (body.call_length) updateData.durationSeconds = Math.round(body.call_length * 60);
   else if (body.duration) updateData.durationSeconds = Math.round(body.duration);
 
+  // ── Step 3: AI processing (only on completed calls with transcript) ──────────
   if (isCompleted && body.transcript) {
+    console.log(`[webhook] Transcript received (${body.transcript.length} chars). Running AI summary...`);
+
     let contactName = callRecord.contactName;
     if (!contactName && callRecord.contactId) {
       const contact = await db.select().from(contactsTable).where(eq(contactsTable.id, callRecord.contactId)).limit(1);
@@ -371,25 +464,36 @@ router.post("/calls/webhook", async (req, res) => {
       const contact = await db.select().from(contactsTable).where(eq(contactsTable.phone, callRecord.contactPhone)).limit(1);
       if (contact[0]) { contactName = contact[0].name; updateData.contactName = contactName; }
     }
+    console.log(`[webhook] contactName resolved to: "${contactName ?? "unknown"}"`);
 
-    const aiResult = await generateAISummary(body.transcript, contactName);
+    const aiResult = await generateAISummary(body.transcript, contactName, callRecord.id);
     if (aiResult.summary) updateData.summary = aiResult.summary;
     if (aiResult.keyInsights.length > 0) updateData.keyInsights = JSON.stringify(aiResult.keyInsights);
     if (aiResult.leadScore) updateData.leadScore = aiResult.leadScore;
 
-    await db.update(callsTable).set(updateData).where(eq(callsTable.id, callRecord.id));
-    console.log(`[webhook] Call id=${callRecord.id} → completed, AI summary generated, leadScore=${aiResult.leadScore}`);
+    console.log(`[webhook] Writing to DB: id=${callRecord.id} fields=${Object.keys(updateData).join(", ")}`);
+    const dbResult = await db.update(callsTable).set(updateData).where(eq(callsTable.id, callRecord.id)).returning();
+    console.log(`[webhook] ✓ DB write complete for call id=${callRecord.id} — status="${dbResult[0]?.status}" leadScore="${dbResult[0]?.leadScore}" hasSummary=${!!dbResult[0]?.summary}`);
 
     const existingBooking = await db.select().from(bookingsTable).where(eq(bookingsTable.callId, callRecord.id)).limit(1);
     if (!existingBooking[0]) {
-      await extractBookingFromTranscript(body.transcript, contactName ?? null, callRecord.contactPhone, callRecord.contactId ?? null, callRecord.id);
+      await extractBookingFromTranscript(body.transcript, contactName ?? null, callRecord.contactPhone, callRecord.contactId ?? null, callRecord.id, callRecord.clientId ?? null);
+    } else {
+      console.log(`[webhook] Booking already exists for call id=${callRecord.id} — skipping extraction`);
     }
     return;
   }
 
+  if (!isCompleted && !isFailed) {
+    console.log(`[webhook] Status "${body.status}" is not terminal — saving intermediate update only`);
+  }
+
   if (Object.keys(updateData).length > 0) {
+    console.log(`[webhook] Writing non-terminal update for call id=${callRecord.id}: fields=${Object.keys(updateData).join(", ")}`);
     await db.update(callsTable).set(updateData).where(eq(callsTable.id, callRecord.id));
-    console.log(`[webhook] Call id=${callRecord.id} → status=${updateData.status ?? "unchanged"}`);
+    console.log(`[webhook] ✓ DB write complete for call id=${callRecord.id} → status=${updateData.status ?? "unchanged"}`);
+  } else {
+    console.log(`[webhook] No fields to update for call id=${callRecord.id}`);
   }
 });
 
@@ -431,7 +535,7 @@ router.get("/calls/:id", adminAuth, async (req, res) => {
         if (data.summary) updateData.summary = data.summary;
 
         if (isCompleted && transcriptText && !call.keyInsights) {
-          const aiResult = await generateAISummary(transcriptText, call.contactName);
+          const aiResult = await generateAISummary(transcriptText, call.contactName, call.id);
           if (aiResult.summary) updateData.summary = aiResult.summary;
           if (aiResult.keyInsights.length > 0) updateData.keyInsights = JSON.stringify(aiResult.keyInsights);
           if (aiResult.leadScore) updateData.leadScore = aiResult.leadScore;
