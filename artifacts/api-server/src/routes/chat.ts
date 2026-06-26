@@ -146,8 +146,18 @@ Rules:
         }
 
         if (contactPhone && !callResult.message.includes("not found")) {
+          // Fetch per-client config if the contact belongs to a client
+          let effectiveConfig = config;
+          if (contactId) {
+            const contact = await db.select().from(contactsTable).where(eq(contactsTable.id, contactId)).limit(1);
+            if (contact[0]?.clientId) {
+              const clientConfig = await db.select().from(agentConfigTable).where(eq(agentConfigTable.clientId, contact[0].clientId)).limit(1);
+              if (clientConfig[0]) effectiveConfig = clientConfig[0];
+            }
+          }
+
           // Build prompt — merge custom_topic into the agent's base prompt
-          const basePrompt = config?.prompt ?? "You are a helpful AI assistant.";
+          const basePrompt = effectiveConfig?.prompt ?? "You are a helpful AI assistant.";
           const effectivePrompt = input.custom_topic
             ? `${basePrompt}\n\nIMPORTANT — Special instructions for this specific call: ${input.custom_topic}`
             : basePrompt;
@@ -172,9 +182,9 @@ Rules:
           const blandPayload: Record<string, unknown> = {
             phone_number: contactPhone,
             task: effectivePrompt,
-            voice: config?.voice ?? "maya",
-            first_sentence: config?.firstMessage ?? "Hi, this is an AI calling to follow up.",
-            max_duration: config?.maxDuration ?? 300,
+            voice: effectiveConfig?.voice ?? "maya",
+            first_sentence: effectiveConfig?.firstMessage ?? "Hi, this is an AI calling to follow up.",
+            max_duration: effectiveConfig?.maxDuration ?? 300,
             record: true,
             answered_by_enabled: true,
             metadata: { call_db_id: callRecord.id, contact_id: contactId },

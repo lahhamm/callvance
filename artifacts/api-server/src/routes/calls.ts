@@ -32,9 +32,13 @@ async function initiateCallForContact(contactId: number) {
   const contact = await db.select().from(contactsTable).where(eq(contactsTable.id, contactId)).limit(1);
   if (!contact[0]) throw new Error(`Contact ${contactId} not found`);
 
-  const configRows = await db.select().from(agentConfigTable).limit(1);
+  // Use per-client config if the contact belongs to a client, else fall back to first available
+  const configQuery = contact[0].clientId
+    ? db.select().from(agentConfigTable).where(eq(agentConfigTable.clientId, contact[0].clientId)).limit(1)
+    : db.select().from(agentConfigTable).limit(1);
+  const configRows = await configQuery;
   const config = configRows[0];
-  if (!config) throw new Error("Agent config not found");
+  if (!config) throw new Error("Agent config not found — please configure the agent for this client");
   if (!BLAND_API_KEY) throw new Error("BLAND_AI_API_KEY not configured");
 
   const inserted = await db.insert(callsTable).values({
