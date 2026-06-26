@@ -2,6 +2,7 @@ import { Link, useLocation } from "wouter";
 import { Activity, Users, Phone, Settings, CalendarDays, LogOut, Shield, PhoneCall } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { clearSession } from "@/lib/auth";
+import { ChatBox } from "./chat-box";
 
 const NAV_ITEMS = [
   { href: "/admin", label: "Clients", icon: Shield, exact: true },
@@ -85,6 +86,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       </main>
+
+      <ChatBox />
     </div>
   );
 }

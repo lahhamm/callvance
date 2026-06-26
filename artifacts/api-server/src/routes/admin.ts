@@ -305,6 +305,176 @@ router.delete("/admin/clients/:id/bookings/:bookingId", async (req, res) => {
   res.json({ ok: true });
 });
 
+// ── ADMIN CHAT (AI call assistant) ────────────────────────────────────────────
+
+router.post("/admin/chat", async (req, res) => {
+  const { clientId, message, history = [] } = req.body as {
+    clientId: number;
+    message: string;
+    history: Array<{ role: "user" | "assistant"; content: string }>;
+  };
+
+  if (!message) { res.status(400).json({ error: "message is required" }); return; }
+  if (!clientId) { res.status(400).json({ error: "clientId is required" }); return; }
+
+  const [contacts, recentCalls, config, client] = await Promise.all([
+    db.select().from(contactsTable).where(eq(contactsTable.clientId, clientId)).orderBy(contactsTable.createdAt),
+    db.select().from(callsTable).where(eq(callsTable.clientId, clientId)).orderBy(desc(callsTable.createdAt)).limit(5),
+    ensureClientConfig(clientId),
+    db.select().from(clientsTable).where(eq(clientsTable.id, clientId)).limit(1).then(r => r[0]),
+  ]);
+
+  if (!client) { res.status(404).json({ error: "Client not found" }); return; }
+
+  const contactList = contacts.length
+    ? contacts.map(c => `- ID ${c.id}: ${c.name} | ${c.phone}${c.company ? ` | ${c.company}` : ""}${c.email ? ` | ${c.email}` : ""} | status: ${c.status}`).join("\n")
+    : "No contacts yet.";
+
+  const recentCallList = recentCalls.length
+    ? recentCalls.map(c => `- ${c.contactName ?? c.contactPhone} | ${c.status} | ${c.createdAt.toLocaleDateString()}`).join("\n")
+    : "No calls yet.";
+
+  const systemPrompt = `You are a smart call assistant for Callvance, an AI-powered outbound calling platform. You are currently managing the account for: ${client.name} (${client.businessType ?? "business"}).
+
+Help the admin trigger test calls and check call history. Be concise and direct.
+
+When the admin asks to call someone, use the initiate_call tool. Match a name to the contact list if possible, or use phone_number for a raw number. Include custom_topic if they describe a specific script or topic.
+
+## ${client.name}'s Contacts
+${contactList}
+
+## Recent Calls
+${recentCallList}
+
+## Agent Config
+Name: ${config.agentName} | Voice: ${config.voice} | Max: ${config.maxDuration}s
+
+Rules:
+- Match names to contacts and call via contact_id. Use phone_number for raw numbers.
+- Include custom_topic if a specific topic or script is mentioned.
+- If contact not found, suggest adding them in the Contacts tab, or offer to call a raw number.
+- Keep responses short (1–3 sentences).`;
+
+  const tools: Anthropic.Tool[] = [{
+    name: "initiate_call",
+    description: "Initiate an outbound AI voice call for this client. Use contact_id for an existing contact or phone_number for a new number. Optionally pass custom_topic to override the agent's default script.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        contact_id: { type: "number", description: "ID of an existing contact" },
+        phone_number: { type: "string", description: "Raw phone number when no contact exists" },
+        custom_topic: { type: "string", description: "Custom instructions for this specific call" },
+      },
+    },
+  }];
+
+  try {
+    const response = await anthropic.messages.create({
+      model: "claude-haiku-4-5",
+      max_tokens: 1024,
+      system: systemPrompt,
+      tools,
+      messages: [
+        ...history.map(h => ({ role: h.role, content: h.content })),
+        { role: "user", content: message },
+      ],
+    });
+
+    const toolUse = response.content.find(b => b.type === "tool_use");
+
+    if (toolUse && toolUse.type === "tool_use" && toolUse.name === "initiate_call") {
+      const input = toolUse.input as { contact_id?: number; phone_number?: string; custom_topic?: string };
+
+      let callResult: { success: boolean; message: string; call?: object } = { success: false, message: "Call failed." };
+
+      try {
+        let contactPhone: string | undefined = input.phone_number;
+        let contactName: string | undefined;
+        let contactDbId: number | undefined = input.contact_id;
+
+        if (contactDbId) {
+          const contact = contacts.find(c => c.id === contactDbId);
+          if (!contact) {
+            callResult = { success: false, message: `Contact ID ${contactDbId} not found in this client's contacts.` };
+          } else {
+            contactPhone = contact.phone;
+            contactName = contact.name;
+          }
+        }
+
+        if (contactPhone && !callResult.message.includes("not found")) {
+          if (!BLAND_API_KEY) { callResult = { success: false, message: "BlandAI API key not configured." }; }
+          else {
+            const basePrompt = config.prompt ?? "You are a helpful AI assistant.";
+            const effectivePrompt = input.custom_topic
+              ? `${basePrompt}\n\nIMPORTANT — Special instructions for this call: ${input.custom_topic}`
+              : basePrompt;
+
+            const inserted = await db.insert(callsTable).values({
+              clientId, contactId: contactDbId ?? null, contactName: contactName ?? null, contactPhone, status: "queued",
+            }).returning();
+            const callRecord = inserted[0];
+
+            const replitDomain = process.env.REPLIT_DEV_DOMAIN;
+            const webhookUrl = replitDomain ? `https://${replitDomain}/api/calls/webhook` : null;
+
+            const blandPayload: Record<string, unknown> = {
+              phone_number: contactPhone, task: effectivePrompt, voice: config.voice,
+              first_sentence: config.firstMessage, max_duration: config.maxDuration,
+              record: true, answered_by_enabled: true,
+              metadata: { call_db_id: callRecord.id, contact_id: contactDbId, client_id: clientId },
+            };
+            if (webhookUrl) blandPayload.webhook = webhookUrl;
+
+            const blandRes = await fetch(`${BLAND_BASE_URL}/calls`, {
+              method: "POST",
+              headers: { Authorization: BLAND_API_KEY, "Content-Type": "application/json" },
+              body: JSON.stringify(blandPayload),
+            });
+
+            if (blandRes.ok) {
+              const blandData = (await blandRes.json()) as { call_id?: string };
+              await db.update(callsTable).set({ blandCallId: blandData.call_id, status: "in-progress", startedAt: new Date() }).where(eq(callsTable.id, callRecord.id));
+              if (contactDbId) await db.update(contactsTable).set({ lastCalledAt: new Date(), status: "contacted" }).where(eq(contactsTable.id, contactDbId));
+              callResult = { success: true, message: `Call to ${contactName ?? contactPhone} initiated.`, call: { id: callRecord.id, phone: contactPhone, name: contactName } };
+            } else {
+              const err = await blandRes.text();
+              await db.update(callsTable).set({ status: "failed" }).where(eq(callsTable.id, callRecord.id));
+              callResult = { success: false, message: `BlandAI error: ${err}` };
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Admin chat tool error:", err);
+        callResult = { success: false, message: "Internal error while initiating call." };
+      }
+
+      const followUp = await anthropic.messages.create({
+        model: "claude-haiku-4-5",
+        max_tokens: 512,
+        system: systemPrompt,
+        tools,
+        messages: [
+          ...history.map(h => ({ role: h.role, content: h.content })),
+          { role: "user", content: message },
+          { role: "assistant", content: response.content },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: toolUse.id, content: JSON.stringify(callResult) }] },
+        ],
+      });
+
+      const replyText = followUp.content.filter(b => b.type === "text").map(b => (b as Anthropic.TextBlock).text).join("");
+      res.json({ message: replyText || (callResult.success ? "Call initiated." : callResult.message), callInitiated: callResult.success, call: (callResult as { call?: object }).call });
+      return;
+    }
+
+    const replyText = response.content.filter(b => b.type === "text").map(b => (b as Anthropic.TextBlock).text).join("");
+    res.json({ message: replyText, callInitiated: false });
+  } catch (err) {
+    console.error("Admin chat error:", err);
+    res.status(500).json({ error: "Failed to process message" });
+  }
+});
+
 // ── GLOBAL CALLS FEED ─────────────────────────────────────────────────────────
 
 router.get("/admin/calls", async (_req, res) => {
