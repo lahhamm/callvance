@@ -8,6 +8,8 @@ export const clientsTable = pgTable("clients", {
   isActive: boolean("is_active").notNull().default(true),
   accessToken: text("access_token").notNull().unique(),
   portalPassword: text("portal_password"),
+  calUsername: text("cal_username"),
+  calEventId: text("cal_event_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

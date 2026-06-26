@@ -78,13 +78,15 @@ router.get("/admin/clients/:id", async (req, res) => {
 
 router.patch("/admin/clients/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const { name, businessType, phone, isActive, portalPassword } = req.body as { name?: string; businessType?: string; phone?: string; isActive?: boolean; portalPassword?: string };
+  const { name, businessType, phone, isActive, portalPassword, calUsername, calEventId } = req.body as { name?: string; businessType?: string; phone?: string; isActive?: boolean; portalPassword?: string; calUsername?: string; calEventId?: string };
   const updated = await db.update(clientsTable).set({
     ...(name && { name }),
     ...(businessType !== undefined && { businessType }),
     ...(phone !== undefined && { phone }),
     ...(isActive !== undefined && { isActive }),
     ...(portalPassword !== undefined && { portalPassword: portalPassword || null }),
+    ...(calUsername !== undefined && { calUsername: calUsername || null }),
+    ...(calEventId !== undefined && { calEventId: calEventId || null }),
     updatedAt: new Date(),
   }).where(eq(clientsTable.id, id)).returning();
   if (!updated[0]) { res.status(404).json({ error: "Not found" }); return; }

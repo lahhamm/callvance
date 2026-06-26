@@ -4,7 +4,7 @@ import { useLocation, useParams } from "wouter";
 import { authHeader } from "@/lib/auth";
 import {
   ArrowLeft, Copy, Check, Plus, Phone, Trash2, Zap,
-  FileText, Clock, XCircle, Eye, EyeOff, KeyRound, RefreshCw
+  FileText, Clock, XCircle, Eye, EyeOff, KeyRound, RefreshCw, CalendarDays
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 
-type Client = { id: number; name: string; businessType: string; phone: string; isActive: boolean; accessToken: string; portalPassword?: string };
+type Client = { id: number; name: string; businessType: string; phone: string; isActive: boolean; accessToken: string; portalPassword?: string; calUsername?: string; calEventId?: string };
 type Contact = { id: number; name: string; phone: string; email?: string; company?: string; status: string; lastCalledAt?: string };
 type Call = { id: number; contactName?: string; contactPhone: string; status: string; summary?: string; keyInsights?: string; leadScore?: string; durationSeconds?: number; createdAt: string; transcript?: string };
 type Booking = { id: number; contactName?: string; contactPhone?: string; scheduledAt: string; status: string; notes?: string; timezone?: string | null };
@@ -355,10 +355,17 @@ function AccessTab({ clientId, client, qc, toast }: { clientId: number; client: 
   const [password, setPassword] = useState(client.portalPassword ?? "");
   const [showPw, setShowPw] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [calUsername, setCalUsername] = useState(client.calUsername ?? "");
+  const [calEventId, setCalEventId] = useState(client.calEventId ?? "");
 
   const pwMutation = useMutation({
     mutationFn: () => apiFetch(`/admin/clients/${clientId}`, { method: "PATCH", body: JSON.stringify({ portalPassword: password }) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin-client", clientId] }); toast({ title: "Password saved" }); },
+  });
+
+  const calMutation = useMutation({
+    mutationFn: () => apiFetch(`/admin/clients/${clientId}`, { method: "PATCH", body: JSON.stringify({ calUsername: calUsername.trim(), calEventId: calEventId.trim() }) }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin-client", clientId] }); toast({ title: "Cal.com settings saved" }); },
   });
 
   const copy = (text: string, label: string) => {
@@ -428,6 +435,45 @@ function AccessTab({ clientId, client, qc, toast }: { clientId: number; client: 
           </code>
           <Button variant="outline" size="sm" onClick={() => copy(`${window.location.origin}/login`, "Login URL")} className="gap-1.5 shrink-0">
             <Copy className="w-3.5 h-3.5" />Copy
+          </Button>
+        </div>
+      </div>
+
+      {/* Cal.com embed config */}
+      <div className="bg-card border border-border rounded-lg p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <CalendarDays className="w-4 h-4 text-primary" />
+          <h3 className="text-sm font-semibold text-foreground">Cal.com booking embed</h3>
+        </div>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          The client's Appointments tab will show an inline Cal.com booking widget. Enter the Cal.com username and event type slug for this client.
+        </p>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Cal.com username</Label>
+            <Input
+              value={calUsername}
+              onChange={e => setCalUsername(e.target.value)}
+              placeholder="e.g. john-smith"
+              className="font-mono text-sm"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Event type slug</Label>
+            <Input
+              value={calEventId}
+              onChange={e => setCalEventId(e.target.value)}
+              placeholder="e.g. 30min or consultation"
+              className="font-mono text-sm"
+            />
+          </div>
+          {calUsername && calEventId && (
+            <p className="text-xs text-muted-foreground font-mono bg-secondary/40 rounded px-2.5 py-1.5">
+              {calUsername}/{calEventId}
+            </p>
+          )}
+          <Button onClick={() => calMutation.mutate()} disabled={calMutation.isPending} className="w-full">
+            {calMutation.isPending ? "Saving…" : "Save Cal.com settings"}
           </Button>
         </div>
       </div>

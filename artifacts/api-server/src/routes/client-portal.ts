@@ -19,7 +19,7 @@ async function resolveClient(token: string) {
 router.get("/client/:token", async (req, res) => {
   const client = await resolveClient(req.params.token);
   if (!client) { res.status(404).json({ error: "Not found" }); return; }
-  res.json({ id: client.id, name: client.name, businessType: client.businessType });
+  res.json({ id: client.id, name: client.name, businessType: client.businessType, calUsername: client.calUsername ?? null, calEventId: client.calEventId ?? null });
 });
 
 router.get("/client/:token/calls", async (req, res) => {
