@@ -7,6 +7,7 @@ export const clientsTable = pgTable("clients", {
   phone: text("phone").notNull().default(""),
   isActive: boolean("is_active").notNull().default(true),
   accessToken: text("access_token").notNull().unique(),
+  portalPassword: text("portal_password"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

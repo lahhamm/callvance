@@ -1,18 +1,22 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useParams } from "wouter";
 import { authHeader } from "@/lib/auth";
-import { ArrowLeft, Copy, Check, Plus, Phone, Trash2, Zap, FileText, Calendar, Users, Settings, Clock, RefreshCw, XCircle, ToggleLeft, ToggleRight } from "lucide-react";
+import {
+  ArrowLeft, Copy, Check, Plus, Phone, Trash2, Zap,
+  FileText, Clock, XCircle, Eye, EyeOff, KeyRound, RefreshCw
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 
-type Client = { id: number; name: string; businessType: string; phone: string; isActive: boolean; accessToken: string };
+type Client = { id: number; name: string; businessType: string; phone: string; isActive: boolean; accessToken: string; portalPassword?: string };
 type Contact = { id: number; name: string; phone: string; email?: string; company?: string; status: string; lastCalledAt?: string };
 type Call = { id: number; contactName?: string; contactPhone: string; status: string; summary?: string; keyInsights?: string; leadScore?: string; durationSeconds?: number; createdAt: string; transcript?: string };
 type Booking = { id: number; contactName?: string; contactPhone?: string; scheduledAt: string; status: string; notes?: string };
@@ -22,7 +26,7 @@ type Availability = { id: number; timezone: string; notificationEmail?: string; 
 const VOICES = ["maya", "ryan", "adriana", "tina", "matt", "evelyn"];
 const DAYS = [{ value: 0, label: "Sun" }, { value: 1, label: "Mon" }, { value: 2, label: "Tue" }, { value: 3, label: "Wed" }, { value: 4, label: "Thu" }, { value: 5, label: "Fri" }, { value: 6, label: "Sat" }];
 const TIMEZONES = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London", "Europe/Paris", "Asia/Tokyo", "Asia/Singapore", "Australia/Sydney"];
-const TABS = ["Contacts", "Agent Config", "Calls", "Bookings", "Availability", "Share"] as const;
+const TABS = ["Contacts", "Agent Config", "Calls", "Bookings", "Availability", "Access"] as const;
 
 function apiFetch(path: string, init?: RequestInit) {
   return fetch(`/api${path}`, { ...init, headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers as Record<string, string> ?? {}) } }).then(r => { if (!r.ok) throw new Error("API error"); return r.json(); });
@@ -33,11 +37,15 @@ function parseInsights(raw?: string | null): string[] {
   try { return JSON.parse(raw) as string[]; } catch { return raw.split("\n").filter(Boolean); }
 }
 
-function scoreBadge(score?: string | null) {
+function ScoreBadge({ score }: { score?: string | null }) {
   if (!score) return null;
   const s = score.toLowerCase();
-  const map: Record<string, string> = { hot: "bg-red-500/20 text-red-400 border-red-500/30", warm: "bg-amber-500/20 text-amber-400 border-amber-500/30", cold: "bg-blue-500/20 text-blue-400 border-blue-500/30" };
-  return <span className={`text-[10px] uppercase tracking-wider border px-2 py-0.5 font-mono ${map[s] ?? "bg-secondary text-muted-foreground"}`}>{score.toUpperCase()}</span>;
+  const styles: Record<string, string> = {
+    hot: "bg-green-500/10 text-green-400 border-green-500/20",
+    warm: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+    cold: "bg-slate-500/10 text-slate-400 border-slate-500/20",
+  };
+  return <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${styles[s] ?? "bg-secondary text-muted-foreground"}`}>{score}</span>;
 }
 
 export default function ClientDetail() {
@@ -61,49 +69,61 @@ export default function ClientDetail() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin-client", clientId] }),
   });
 
-  if (!client) return <div className="p-8 text-center text-muted-foreground font-mono uppercase text-sm">Loading...</div>;
-
-  const portalUrl = `${window.location.origin}/client/${client.accessToken}`;
+  if (!client) return <div className="p-8 text-center text-muted-foreground text-sm">Loading…</div>;
 
   return (
-    <div className="space-y-6 font-mono">
+    <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-start gap-4">
-        <button onClick={() => navigate("/admin")} className="mt-1 text-muted-foreground hover:text-foreground transition-colors"><ArrowLeft className="w-4 h-4" /></button>
+      <div className="flex items-start gap-3">
+        <button onClick={() => navigate("/admin")} className="mt-0.5 text-muted-foreground hover:text-foreground transition-colors p-1 rounded">
+          <ArrowLeft className="w-4 h-4" />
+        </button>
         <div className="flex-1">
           <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-2xl font-bold uppercase tracking-tight">{client.name}</h1>
-            <Badge variant={client.isActive ? "default" : "secondary"} className="uppercase text-[10px]">{client.isActive ? "Active" : "Inactive"}</Badge>
+            <h1 className="text-2xl font-semibold text-foreground tracking-tight">{client.name}</h1>
+            <Badge variant={client.isActive ? "default" : "secondary"}>
+              {client.isActive ? "Active" : "Paused"}
+            </Badge>
             {client.businessType && <span className="text-sm text-muted-foreground">{client.businessType}</span>}
-            <button onClick={() => toggleMutation.mutate(!client.isActive)} className="text-muted-foreground hover:text-primary transition-colors">
-              {client.isActive ? <ToggleRight className="w-5 h-5 text-primary" /> : <ToggleLeft className="w-5 h-5" />}
-            </button>
           </div>
-          {client.phone && <p className="text-sm text-muted-foreground mt-1">{client.phone}</p>}
+          <div className="flex items-center gap-4 mt-1.5">
+            {client.phone && <span className="text-sm text-muted-foreground">{client.phone}</span>}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">Active</span>
+              <Switch checked={client.isActive} onCheckedChange={v => toggleMutation.mutate(v)} />
+            </div>
+          </div>
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-border flex gap-0">
+      <div className="border-b border-border flex gap-0 -mb-px">
         {TABS.map(t => (
-          <button key={t} onClick={() => setTab(t)} className={`px-4 py-2 text-xs uppercase tracking-wider border-b-2 transition-colors ${tab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>{t}</button>
+          <button key={t} onClick={() => setTab(t)} className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${tab === t ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
+            {t}
+          </button>
         ))}
       </div>
 
-      {/* Tab content */}
       {tab === "Contacts" && <ContactsTab clientId={clientId} contacts={contacts} qc={qc} toast={toast} />}
       {tab === "Agent Config" && config && <ConfigTab clientId={clientId} config={config} qc={qc} toast={toast} />}
       {tab === "Calls" && <CallsTab calls={calls} onTranscript={setTranscript} />}
       {tab === "Bookings" && <BookingsTab clientId={clientId} bookings={bookings} qc={qc} toast={toast} />}
       {tab === "Availability" && avail && <AvailabilityTab clientId={clientId} avail={avail} qc={qc} toast={toast} />}
-      {tab === "Share" && <ShareTab portalUrl={portalUrl} toast={toast} />}
+      {tab === "Access" && <AccessTab clientId={clientId} client={client} qc={qc} toast={toast} />}
 
-      {/* Transcript modal */}
+      {/* Transcript */}
       <Dialog open={!!transcript} onOpenChange={o => !o && setTranscript(null)}>
-        <DialogContent className="border-border bg-card max-w-2xl max-h-[80vh] flex flex-col font-mono">
-          <DialogHeader className="border-b border-border pb-4"><DialogTitle className="uppercase tracking-tight text-primary text-sm flex items-center gap-2"><FileText className="w-4 h-4" />Transcript</DialogTitle></DialogHeader>
-          <div className="flex-1 overflow-y-auto p-4 space-y-3 text-xs">
-            {transcript?.split("\n").map((line, i) => { if (!line.trim()) return null; const isAgent = /^(agent|ai|aria):/i.test(line); return <div key={i} className={`p-2 border-l-2 leading-relaxed ${isAgent ? "bg-primary/5 border-primary" : "bg-secondary/30 border-muted-foreground/50 text-muted-foreground"}`}>{line}</div>; })}
+        <DialogContent className="bg-card border-border max-w-2xl max-h-[80vh] flex flex-col">
+          <DialogHeader className="border-b border-border pb-4">
+            <DialogTitle className="text-sm font-medium flex items-center gap-2"><FileText className="w-4 h-4 text-primary" />Transcript</DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 overflow-y-auto p-4 space-y-2 text-xs font-mono">
+            {transcript?.split("\n").map((line, i) => {
+              if (!line.trim()) return null;
+              const isAgent = /^(agent|ai|aria|callvance):/i.test(line);
+              return <div key={i} className={`p-2.5 rounded-md leading-relaxed ${isAgent ? "bg-primary/10 text-primary border border-primary/20" : "bg-secondary/50 text-muted-foreground"}`}>{line}</div>;
+            })}
           </div>
         </DialogContent>
       </Dialog>
@@ -114,6 +134,7 @@ export default function ClientDetail() {
 function ContactsTab({ clientId, contacts, qc, toast }: { clientId: number; contacts: Contact[]; qc: ReturnType<typeof useQueryClient>; toast: ReturnType<typeof useToast>["toast"] }) {
   const [form, setForm] = useState({ name: "", phone: "", email: "", company: "" });
   const [show, setShow] = useState(false);
+
   const createMutation = useMutation({
     mutationFn: () => apiFetch(`/admin/clients/${clientId}/contacts`, { method: "POST", body: JSON.stringify(form) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin-contacts", clientId] }); setShow(false); setForm({ name: "", phone: "", email: "", company: "" }); toast({ title: "Contact added" }); },
@@ -126,34 +147,43 @@ function ContactsTab({ clientId, contacts, qc, toast }: { clientId: number; cont
     mutationFn: (contactId: number) => apiFetch(`/admin/clients/${clientId}/contacts/${contactId}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin-contacts", clientId] }),
   });
+
   return (
     <div className="space-y-4">
-      <div className="flex justify-end"><button onClick={() => setShow(true)} className="flex items-center gap-2 text-xs uppercase tracking-wider border border-primary/40 px-3 py-2 text-primary hover:bg-primary/10 transition-colors"><Plus className="w-3.5 h-3.5" />Add Contact</button></div>
-      <div className="border border-border bg-card divide-y divide-border">
-        {contacts.length === 0 ? <div className="p-6 text-center text-muted-foreground text-sm uppercase">No contacts yet</div> : contacts.map(c => (
-          <div key={c.id} className="p-3 flex items-center gap-3">
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2"><span className="font-bold text-sm">{c.name}</span><Badge variant="secondary" className="text-[10px] uppercase">{c.status}</Badge></div>
-              <div className="text-xs text-muted-foreground">{c.phone}{c.company ? ` · ${c.company}` : ""}</div>
+      <div className="flex justify-end">
+        <Button size="sm" onClick={() => setShow(true)} className="gap-1.5"><Plus className="w-3.5 h-3.5" />Add contact</Button>
+      </div>
+      <div className="bg-card border border-border rounded-lg overflow-hidden divide-y divide-border">
+        {contacts.length === 0
+          ? <div className="p-8 text-center text-muted-foreground text-sm">No contacts yet</div>
+          : contacts.map(c => (
+            <div key={c.id} className="px-4 py-3 flex items-center gap-3 hover:bg-secondary/20 transition-colors">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-sm text-foreground">{c.name}</span>
+                  <Badge variant="secondary" className="text-xs">{c.status}</Badge>
+                </div>
+                <div className="text-xs text-muted-foreground mt-0.5 font-mono">{c.phone}{c.company ? ` · ${c.company}` : ""}</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" onClick={() => callMutation.mutate(c.id)} className="gap-1.5 h-7 text-xs"><Phone className="w-3 h-3" />Call</Button>
+                <button onClick={() => deleteMutation.mutate(c.id)} className="text-muted-foreground hover:text-destructive transition-colors p-1 rounded"><Trash2 className="w-3.5 h-3.5" /></button>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <button onClick={() => callMutation.mutate(c.id)} className="text-[10px] uppercase tracking-wider border border-primary/30 px-2 py-1 text-primary hover:bg-primary/10 transition-colors flex items-center gap-1"><Phone className="w-3 h-3" />Call</button>
-              <button onClick={() => deleteMutation.mutate(c.id)} className="text-muted-foreground hover:text-destructive transition-colors p-1"><Trash2 className="w-3.5 h-3.5" /></button>
-            </div>
-          </div>
-        ))}
+          ))
+        }
       </div>
       <Dialog open={show} onOpenChange={setShow}>
-        <DialogContent className="border-border bg-card font-mono">
-          <DialogHeader><DialogTitle className="uppercase tracking-tight text-primary text-sm">Add Contact</DialogTitle></DialogHeader>
+        <DialogContent className="bg-card border-border">
+          <DialogHeader><DialogTitle>Add contact</DialogTitle></DialogHeader>
           <div className="space-y-3 py-2">
-            {[["Name *", "name", "Jane Smith"], ["Phone *", "phone", "+1 555 000 0000"], ["Email", "email", "jane@company.com"], ["Company", "company", "Acme Corp"]].map(([label, key, placeholder]) => (
-              <div key={key} className="space-y-1"><Label className="text-xs uppercase tracking-wider">{label}</Label><Input value={(form as Record<string, string>)[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} className="bg-background border-border rounded-none font-mono text-sm" placeholder={placeholder} /></div>
+            {[["Name *", "name", "Jane Smith", "text"], ["Phone *", "phone", "+1 555 000 0000", "tel"], ["Email", "email", "jane@company.com", "email"], ["Company", "company", "Acme Corp", "text"]].map(([label, key, placeholder, type]) => (
+              <div key={key} className="space-y-1.5"><Label className="text-sm font-medium">{label}</Label><Input type={type} value={(form as Record<string, string>)[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))} className="bg-background border-border" placeholder={placeholder} /></div>
             ))}
           </div>
           <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setShow(false)} className="text-xs uppercase tracking-wider">Cancel</Button>
-            <Button onClick={() => createMutation.mutate()} disabled={!form.name || !form.phone} className="text-xs uppercase tracking-wider">{createMutation.isPending ? "Adding..." : "Add"}</Button>
+            <Button variant="outline" onClick={() => setShow(false)}>Cancel</Button>
+            <Button onClick={() => createMutation.mutate()} disabled={!form.name || !form.phone}>{createMutation.isPending ? "Adding…" : "Add contact"}</Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -168,45 +198,47 @@ function ConfigTab({ clientId, config, qc, toast }: { clientId: number; config: 
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin-config", clientId] }); toast({ title: "Config saved" }); },
   });
   return (
-    <div className="space-y-4 max-w-2xl">
+    <div className="space-y-5 max-w-2xl">
       <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-1.5"><Label className="text-xs uppercase tracking-wider text-muted-foreground">Agent Name</Label><Input value={form.agentName} onChange={e => setForm(p => ({ ...p, agentName: e.target.value }))} className="bg-background border-border rounded-none font-mono text-sm" /></div>
-        <div className="space-y-1.5"><Label className="text-xs uppercase tracking-wider text-muted-foreground">Voice</Label>
+        <div className="space-y-1.5"><Label className="text-sm font-medium">Agent name</Label><Input value={form.agentName} onChange={e => setForm(p => ({ ...p, agentName: e.target.value }))} className="bg-background border-border" /></div>
+        <div className="space-y-1.5"><Label className="text-sm font-medium">Voice</Label>
           <Select value={form.voice} onValueChange={v => setForm(p => ({ ...p, voice: v }))}>
-            <SelectTrigger className="bg-background border-border rounded-none font-mono text-sm"><SelectValue /></SelectTrigger>
-            <SelectContent className="bg-card border-border rounded-none">{VOICES.map(v => <SelectItem key={v} value={v} className="font-mono text-xs capitalize">{v}</SelectItem>)}</SelectContent>
+            <SelectTrigger className="bg-background border-border"><SelectValue /></SelectTrigger>
+            <SelectContent className="bg-card border-border">{VOICES.map(v => <SelectItem key={v} value={v} className="capitalize">{v}</SelectItem>)}</SelectContent>
           </Select>
         </div>
       </div>
-      <div className="space-y-1.5"><Label className="text-xs uppercase tracking-wider text-muted-foreground">First Message</Label><Input value={form.firstMessage} onChange={e => setForm(p => ({ ...p, firstMessage: e.target.value }))} className="bg-background border-border rounded-none font-mono text-sm" /></div>
-      <div className="space-y-1.5"><Label className="text-xs uppercase tracking-wider text-muted-foreground">System Prompt</Label><Textarea value={form.prompt} onChange={e => setForm(p => ({ ...p, prompt: e.target.value }))} className="min-h-[150px] bg-background border-border rounded-none font-mono text-sm" /></div>
-      <div className="space-y-1.5"><Label className="text-xs uppercase tracking-wider text-muted-foreground">Qualification Criteria</Label><Textarea value={form.qualificationCriteria} onChange={e => setForm(p => ({ ...p, qualificationCriteria: e.target.value }))} placeholder="e.g. Must have budget > $5k, need a demo within 30 days, homeowner..." className="min-h-[80px] bg-background border-border rounded-none font-mono text-sm" /></div>
-      <div className="space-y-1.5 max-w-[160px]"><Label className="text-xs uppercase tracking-wider text-muted-foreground">Max Duration (s)</Label><Input type="number" value={form.maxDuration} onChange={e => setForm(p => ({ ...p, maxDuration: Number(e.target.value) }))} className="bg-background border-border rounded-none font-mono text-sm" /></div>
-      <div className="flex justify-end pt-2 border-t border-border"><Button onClick={() => mutation.mutate()} disabled={mutation.isPending} className="text-xs uppercase tracking-wider">{mutation.isPending ? "Saving..." : "Save Config"}</Button></div>
+      <div className="space-y-1.5"><Label className="text-sm font-medium">Opening message</Label><Input value={form.firstMessage} onChange={e => setForm(p => ({ ...p, firstMessage: e.target.value }))} className="bg-background border-border" /></div>
+      <div className="space-y-1.5"><Label className="text-sm font-medium">System prompt</Label><Textarea value={form.prompt} onChange={e => setForm(p => ({ ...p, prompt: e.target.value }))} className="min-h-[140px] bg-background border-border text-sm" /></div>
+      <div className="space-y-1.5"><Label className="text-sm font-medium">Qualification criteria <span className="text-muted-foreground font-normal">(optional)</span></Label><Textarea value={form.qualificationCriteria} onChange={e => setForm(p => ({ ...p, qualificationCriteria: e.target.value }))} placeholder="e.g. Must have budget > $5k, homeowner, decision maker…" className="min-h-[80px] bg-background border-border text-sm" /></div>
+      <div className="space-y-1.5 max-w-[140px]"><Label className="text-sm font-medium">Max duration (s)</Label><Input type="number" value={form.maxDuration} onChange={e => setForm(p => ({ ...p, maxDuration: Number(e.target.value) }))} className="bg-background border-border" /></div>
+      <div className="flex justify-end pt-2 border-t border-border"><Button onClick={() => mutation.mutate()} disabled={mutation.isPending}>{mutation.isPending ? "Saving…" : "Save config"}</Button></div>
     </div>
   );
 }
 
 function CallsTab({ calls, onTranscript }: { calls: Call[]; onTranscript: (t: string) => void }) {
   return (
-    <div className="border border-border bg-card divide-y divide-border">
-      {calls.length === 0 ? <div className="p-6 text-center text-muted-foreground text-sm uppercase">No calls yet</div> : calls.map(c => {
-        const insights = parseInsights(c.keyInsights);
-        return (
-          <div key={c.id} className="p-4 space-y-2">
-            <div className="flex items-center gap-3 flex-wrap">
-              <span className="font-bold text-sm">{c.contactName || c.contactPhone}</span>
-              <Badge variant={c.status === "completed" ? "default" : c.status === "failed" ? "destructive" : "secondary"} className="text-[10px] uppercase">{c.status}</Badge>
-              {scoreBadge(c.leadScore)}
-              <span className="text-xs text-muted-foreground ml-auto">{new Date(c.createdAt).toLocaleString()}</span>
-              {c.durationSeconds && <span className="text-xs text-muted-foreground flex items-center gap-1"><Clock className="w-3 h-3" />{c.durationSeconds}s</span>}
-              {c.transcript && <button onClick={() => onTranscript(c.transcript!)} className="text-[10px] uppercase tracking-wider border border-primary/30 px-2 py-1 text-primary hover:bg-primary/10 flex items-center gap-1"><FileText className="w-3 h-3" />Transcript</button>}
+    <div className="bg-card border border-border rounded-lg overflow-hidden divide-y divide-border">
+      {calls.length === 0
+        ? <div className="p-8 text-center text-muted-foreground text-sm">No calls yet</div>
+        : calls.map(c => {
+          const insights = parseInsights(c.keyInsights);
+          return (
+            <div key={c.id} className="p-4 space-y-2 hover:bg-secondary/20 transition-colors">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <span className="font-medium text-sm text-foreground">{c.contactName || c.contactPhone}</span>
+                <Badge variant={c.status === "completed" ? "default" : c.status === "failed" ? "destructive" : "secondary"} className="text-xs">{c.status}</Badge>
+                <ScoreBadge score={c.leadScore} />
+                <span className="text-xs text-muted-foreground ml-auto">{new Date(c.createdAt).toLocaleString()}</span>
+                {c.durationSeconds && <span className="text-xs text-muted-foreground flex items-center gap-1"><Clock className="w-3 h-3" />{c.durationSeconds}s</span>}
+                {c.transcript && <button onClick={() => onTranscript(c.transcript!)} className="text-xs text-primary hover:text-primary/80 flex items-center gap-1 transition-colors"><FileText className="w-3 h-3" />Transcript</button>}
+              </div>
+              {c.summary && <p className="text-sm text-muted-foreground leading-relaxed">{c.summary}</p>}
+              {insights.length > 0 && <div className="flex flex-wrap gap-1.5">{insights.map((ins, i) => <span key={i} className="text-xs px-2 py-0.5 bg-primary/10 text-primary border border-primary/20 rounded-full">{ins}</span>)}</div>}
             </div>
-            {c.summary && <p className="text-xs text-muted-foreground leading-relaxed">{c.summary}</p>}
-            {insights.length > 0 && <div className="flex flex-wrap gap-1.5">{insights.map((ins, i) => <span key={i} className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 bg-primary/10 text-primary border border-primary/20 uppercase tracking-wider"><Zap className="w-2.5 h-2.5" />{ins}</span>)}</div>}
-          </div>
-        );
-      })}
+          );
+        })}
     </div>
   );
 }
@@ -219,23 +251,26 @@ function BookingsTab({ clientId, bookings, qc, toast }: { clientId: number; book
   const upcoming = bookings.filter(b => b.status === "confirmed" && new Date(b.scheduledAt) > new Date());
   const past = bookings.filter(b => b.status !== "confirmed" || new Date(b.scheduledAt) <= new Date());
   return (
-    <div className="space-y-4">
-      {[{ label: "Upcoming", items: upcoming }, { label: "Past & Cancelled", items: past }].map(({ label, items }) => (
+    <div className="space-y-5">
+      {[{ label: "Upcoming", items: upcoming }, { label: "Past & cancelled", items: past }].map(({ label, items }) => (
         <div key={label}>
-          <div className="text-xs uppercase tracking-widest text-muted-foreground mb-2">{label} — {items.length}</div>
-          <div className="border border-border bg-card divide-y divide-border">
-            {items.length === 0 ? <div className="p-4 text-center text-muted-foreground text-sm">None</div> : items.map(b => (
-              <div key={b.id} className={`p-3 flex items-center gap-3 ${label === "Past & Cancelled" ? "opacity-60" : ""}`}>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2"><span className="font-bold text-sm">{b.contactName || "Unknown"}</span><Badge variant={b.status === "confirmed" ? "default" : "destructive"} className="text-[10px] uppercase">{b.status}</Badge></div>
-                  <div className="text-xs text-primary mt-0.5">{new Date(b.scheduledAt).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
-                  {b.notes && <div className="text-xs text-muted-foreground mt-0.5">{b.notes}</div>}
+          <h3 className="text-sm font-medium text-muted-foreground mb-2">{label}</h3>
+          <div className="bg-card border border-border rounded-lg overflow-hidden divide-y divide-border">
+            {items.length === 0
+              ? <div className="p-5 text-center text-muted-foreground text-sm">None</div>
+              : items.map(b => (
+                <div key={b.id} className={`px-4 py-3 flex items-center gap-3 ${label !== "Upcoming" ? "opacity-60" : ""}`}>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2"><span className="font-medium text-sm">{b.contactName || "Unknown"}</span><Badge variant={b.status === "confirmed" ? "default" : "secondary"} className="text-xs">{b.status}</Badge></div>
+                    <div className="text-xs text-primary mt-0.5">{new Date(b.scheduledAt).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
+                    {b.notes && <div className="text-xs text-muted-foreground mt-0.5">{b.notes}</div>}
+                  </div>
+                  {b.status === "confirmed" && new Date(b.scheduledAt) > new Date() && (
+                    <Button size="sm" variant="destructive" onClick={() => cancelMutation.mutate(b.id)} className="gap-1.5 h-7 text-xs"><XCircle className="w-3 h-3" />Cancel</Button>
+                  )}
                 </div>
-                {b.status === "confirmed" && new Date(b.scheduledAt) > new Date() && (
-                  <button onClick={() => cancelMutation.mutate(b.id)} className="text-[10px] uppercase tracking-wider border border-destructive/30 px-2 py-1 text-destructive hover:bg-destructive/10 transition-colors flex items-center gap-1"><XCircle className="w-3 h-3" />Cancel</button>
-                )}
-              </div>
-            ))}
+              ))
+            }
           </div>
         </div>
       ))}
@@ -256,41 +291,105 @@ function AvailabilityTab({ clientId, avail, qc, toast }: { clientId: number; ava
   });
   const toggle = (d: number) => setSelectedDays(p => p.includes(d) ? p.filter(x => x !== d) : [...p, d].sort());
   return (
-    <div className="space-y-4 max-w-xl">
-      <div className="space-y-2"><Label className="text-xs uppercase tracking-wider text-muted-foreground">Available Days</Label><div className="flex gap-2 flex-wrap">{DAYS.map(d => <button key={d.value} type="button" onClick={() => toggle(d.value)} className={`px-3 py-1.5 text-xs uppercase tracking-wider border transition-colors ${selectedDays.includes(d.value) ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:border-primary/50"}`}>{d.label}</button>)}</div></div>
+    <div className="space-y-5 max-w-xl">
+      <div className="space-y-2"><Label className="text-sm font-medium">Available days</Label><div className="flex gap-2 flex-wrap">{DAYS.map(d => <button key={d.value} type="button" onClick={() => toggle(d.value)} className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${selectedDays.includes(d.value) ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>{d.label}</button>)}</div></div>
       <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-1.5"><Label className="text-xs uppercase tracking-wider text-muted-foreground">Start Time</Label><Input type="time" value={start} onChange={e => setStart(e.target.value)} className="bg-background border-border rounded-none font-mono" /></div>
-        <div className="space-y-1.5"><Label className="text-xs uppercase tracking-wider text-muted-foreground">End Time</Label><Input type="time" value={end} onChange={e => setEnd(e.target.value)} className="bg-background border-border rounded-none font-mono" /></div>
+        <div className="space-y-1.5"><Label className="text-sm font-medium">Start time</Label><Input type="time" value={start} onChange={e => setStart(e.target.value)} className="bg-background border-border" /></div>
+        <div className="space-y-1.5"><Label className="text-sm font-medium">End time</Label><Input type="time" value={end} onChange={e => setEnd(e.target.value)} className="bg-background border-border" /></div>
       </div>
       <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-1.5"><Label className="text-xs uppercase tracking-wider text-muted-foreground">Timezone</Label>
-          <Select value={tz} onValueChange={setTz}><SelectTrigger className="bg-background border-border rounded-none font-mono text-sm"><SelectValue /></SelectTrigger><SelectContent className="bg-card border-border rounded-none">{TIMEZONES.map(t => <SelectItem key={t} value={t} className="text-xs font-mono">{t}</SelectItem>)}</SelectContent></Select>
+        <div className="space-y-1.5"><Label className="text-sm font-medium">Timezone</Label>
+          <Select value={tz} onValueChange={setTz}><SelectTrigger className="bg-background border-border"><SelectValue /></SelectTrigger><SelectContent className="bg-card border-border">{TIMEZONES.map(t => <SelectItem key={t} value={t} className="text-xs">{t}</SelectItem>)}</SelectContent></Select>
         </div>
-        <div className="space-y-1.5"><Label className="text-xs uppercase tracking-wider text-muted-foreground">Slot (min)</Label>
-          <Select value={String(slot)} onValueChange={v => setSlot(Number(v))}><SelectTrigger className="bg-background border-border rounded-none font-mono text-sm"><SelectValue /></SelectTrigger><SelectContent className="bg-card border-border rounded-none">{[15, 20, 30, 45, 60].map(m => <SelectItem key={m} value={String(m)} className="text-xs font-mono">{m} min</SelectItem>)}</SelectContent></Select>
+        <div className="space-y-1.5"><Label className="text-sm font-medium">Slot duration</Label>
+          <Select value={String(slot)} onValueChange={v => setSlot(Number(v))}><SelectTrigger className="bg-background border-border"><SelectValue /></SelectTrigger><SelectContent className="bg-card border-border">{[15, 20, 30, 45, 60].map(m => <SelectItem key={m} value={String(m)}>{m} min</SelectItem>)}</SelectContent></Select>
         </div>
       </div>
-      <div className="space-y-1.5"><Label className="text-xs uppercase tracking-wider text-muted-foreground">Notification Email</Label><Input type="email" value={email} onChange={e => setEmail(e.target.value)} className="bg-background border-border rounded-none font-mono" placeholder="you@company.com" /></div>
-      <div className="flex justify-end pt-2 border-t border-border"><Button onClick={() => mutation.mutate()} disabled={mutation.isPending} className="text-xs uppercase tracking-wider">{mutation.isPending ? "Saving..." : "Save Availability"}</Button></div>
+      <div className="space-y-1.5"><Label className="text-sm font-medium">Notification email</Label><Input type="email" value={email} onChange={e => setEmail(e.target.value)} className="bg-background border-border" placeholder="you@company.com" /></div>
+      <div className="flex justify-end pt-2 border-t border-border"><Button onClick={() => mutation.mutate()} disabled={mutation.isPending}>{mutation.isPending ? "Saving…" : "Save availability"}</Button></div>
     </div>
   );
 }
 
-function ShareTab({ portalUrl, toast }: { portalUrl: string; toast: ReturnType<typeof useToast>["toast"] }) {
+function AccessTab({ clientId, client, qc, toast }: { clientId: number; client: Client; qc: ReturnType<typeof useQueryClient>; toast: ReturnType<typeof useToast>["toast"] }) {
+  const [password, setPassword] = useState(client.portalPassword ?? "");
+  const [showPw, setShowPw] = useState(false);
   const [copied, setCopied] = useState(false);
-  const copy = () => { navigator.clipboard.writeText(portalUrl); setCopied(true); toast({ title: "Link copied!" }); setTimeout(() => setCopied(false), 2000); };
+
+  const pwMutation = useMutation({
+    mutationFn: () => apiFetch(`/admin/clients/${clientId}`, { method: "PATCH", body: JSON.stringify({ portalPassword: password }) }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin-client", clientId] }); toast({ title: "Password saved" }); },
+  });
+
+  const copy = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    toast({ title: `${label} copied` });
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const generatePassword = () => {
+    const chars = "abcdefghjkmnpqrstuvwxyz23456789";
+    const pw = Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+    setPassword(pw);
+  };
+
   return (
-    <div className="max-w-lg space-y-4">
-      <div className="border border-border bg-card p-6 space-y-4">
-        <h3 className="text-sm font-bold uppercase tracking-wider text-primary">Client Portal Link</h3>
-        <p className="text-xs text-muted-foreground leading-relaxed">Share this unique URL with your client. They can view their call log and upcoming appointments — no login required.</p>
+    <div className="max-w-lg space-y-6">
+      {/* Client portal password */}
+      <div className="bg-card border border-border rounded-lg p-5 space-y-4">
         <div className="flex items-center gap-2">
-          <input readOnly value={portalUrl} className="flex-1 bg-background border border-border px-3 py-2 text-xs font-mono text-muted-foreground focus:outline-none" />
-          <button onClick={copy} className="flex items-center gap-1.5 border border-primary/40 px-3 py-2 text-xs uppercase tracking-wider text-primary hover:bg-primary/10 transition-colors shrink-0">
-            {copied ? <><Check className="w-3.5 h-3.5" />Copied</> : <><Copy className="w-3.5 h-3.5" />Copy</>}
-          </button>
+          <KeyRound className="w-4 h-4 text-primary" />
+          <h3 className="text-sm font-semibold text-foreground">Client portal password</h3>
         </div>
-        <a href={portalUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline flex items-center gap-1">Open portal →</a>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          Set a password for this client to log in at <span className="font-mono text-foreground">{window.location.origin}/login</span>. They'll be taken directly to their dashboard — no URL token needed.
+        </p>
+        <div className="space-y-2">
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <input
+                type={showPw ? "text" : "password"}
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="Enter or generate a password"
+                className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all pr-9"
+              />
+              <button type="button" onClick={() => setShowPw(p => !p)} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
+                {showPw ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={generatePassword} className="gap-1.5 shrink-0">
+              <RefreshCw className="w-3.5 h-3.5" />Generate
+            </Button>
+          </div>
+          <div className="flex gap-2">
+            <Button onClick={() => pwMutation.mutate()} disabled={!password || pwMutation.isPending} className="flex-1">
+              {pwMutation.isPending ? "Saving…" : "Save password"}
+            </Button>
+            {password && (
+              <Button variant="outline" onClick={() => copy(password, "Password")} className="gap-1.5">
+                {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Login instructions */}
+      <div className="bg-secondary/30 border border-border rounded-lg p-4 space-y-2">
+        <p className="text-xs font-medium text-foreground">Share with client</p>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          Send your client the login URL and their password. They'll log in and land directly on their dashboard.
+        </p>
+        <div className="flex items-center gap-2 mt-2">
+          <code className="flex-1 bg-background border border-border rounded px-2.5 py-1.5 text-xs font-mono text-muted-foreground">
+            {window.location.origin}/login
+          </code>
+          <Button variant="outline" size="sm" onClick={() => copy(`${window.location.origin}/login`, "Login URL")} className="gap-1.5 shrink-0">
+            <Copy className="w-3.5 h-3.5" />Copy
+          </Button>
+        </div>
       </div>
     </div>
   );
