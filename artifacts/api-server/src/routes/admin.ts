@@ -99,6 +99,15 @@ router.delete("/admin/clients/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
+// ── POST /admin/clients/:id/regenerate-token — issue a fresh access token ──
+router.post("/admin/clients/:id/regenerate-token", async (req, res) => {
+  const id = Number(req.params.id);
+  const newToken = crypto.randomUUID().replace(/-/g, "");
+  const updated = await db.update(clientsTable).set({ accessToken: newToken, updatedAt: new Date() }).where(eq(clientsTable.id, id)).returning();
+  if (!updated[0]) { res.status(404).json({ error: "Not found" }); return; }
+  res.json(serializeClient(updated[0]));
+});
+
 // ── CONTACTS ──────────────────────────────────────────────────────────────────
 
 router.get("/admin/clients/:id/contacts", async (req, res) => {
