@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { eq, and, gte, desc } from "drizzle-orm";
-import { db, clientsTable, callsTable, bookingsTable } from "@workspace/db";
+import { db, clientsTable, callsTable, bookingsTable, availabilityTable } from "@workspace/db";
+import { computeSlots } from "../lib/availability-slots";
 
 const router = Router();
 
@@ -31,11 +32,38 @@ router.get("/client/:token/calls", async (req, res) => {
   res.json(calls.map(serializeCall));
 });
 
+router.get("/client/:token/availability/slots", async (req, res) => {
+  const client = await resolveClient(req.params.token);
+  if (!client) { res.status(403).json({ error: "Access revoked or invalid link" }); return; }
+
+  const dateStr = req.query.date as string;
+  if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    res.status(400).json({ error: "date query param required (YYYY-MM-DD)" }); return;
+  }
+
+  const availRows = await db.select().from(availabilityTable).where(eq(availabilityTable.clientId, client.id)).limit(1);
+  if (!availRows[0]) { res.json([]); return; }
+
+  const avail = availRows[0];
+  const slots = await computeSlots(client.id, dateStr, avail);
+  const tz = avail.timezone;
+
+  const isoSlots = slots.map(s =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+    }).format(s) + "T" +
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: tz, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    }).format(s)
+  );
+
+  res.json(isoSlots);
+});
+
 router.get("/client/:token/bookings", async (req, res) => {
   const client = await resolveClient(req.params.token);
   if (!client) { res.status(403).json({ error: "Access revoked or invalid link" }); return; }
   const now = new Date();
-  const { availabilityTable } = await import("@workspace/db");
   const [bookings, availRows] = await Promise.all([
     db.select().from(bookingsTable)
       .where(and(eq(bookingsTable.clientId, client.id), gte(bookingsTable.scheduledAt, now), eq(bookingsTable.status, "confirmed")))

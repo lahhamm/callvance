@@ -31,7 +31,7 @@ function formatInTz(iso: string, timezone?: string | null) {
   return `${time} ${abbr}`;
 }
 type AgentConfig = { id: number; agentName: string; voice: string; prompt: string; firstMessage: string; maxDuration: number; qualificationCriteria?: string };
-type Availability = { id: number; timezone: string; notificationEmail?: string; availableDays: number[]; startTime: string; endTime: string; slotDurationMinutes: number };
+type Availability = { id: number; timezone: string; notificationEmail?: string; availableDays: number[]; startTime: string; endTime: string; slotDurationMinutes: number; preventOverlaps: boolean };
 
 const VOICES = ["maya", "ryan", "adriana", "tina", "matt", "evelyn"];
 const DAYS = [{ value: 0, label: "Sun" }, { value: 1, label: "Mon" }, { value: 2, label: "Tue" }, { value: 3, label: "Wed" }, { value: 4, label: "Thu" }, { value: 5, label: "Fri" }, { value: 6, label: "Sat" }];
@@ -365,8 +365,9 @@ function AvailabilityTab({ clientId, avail, qc, toast }: { clientId: number; ava
   const [end, setEnd] = useState(avail.endTime);
   const [slot, setSlot] = useState(avail.slotDurationMinutes);
   const [email, setEmail] = useState(avail.notificationEmail ?? "");
+  const [preventOverlaps, setPreventOverlaps] = useState(avail.preventOverlaps);
   const mutation = useMutation({
-    mutationFn: () => apiFetch(`/admin/clients/${clientId}/availability`, { method: "PUT", body: JSON.stringify({ timezone: tz, notificationEmail: email || null, availableDays: selectedDays, startTime: start, endTime: end, slotDurationMinutes: slot }) }),
+    mutationFn: () => apiFetch(`/admin/clients/${clientId}/availability`, { method: "PUT", body: JSON.stringify({ timezone: tz, notificationEmail: email || null, availableDays: selectedDays, startTime: start, endTime: end, slotDurationMinutes: slot, preventOverlaps }) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin-avail", clientId] }); toast({ title: "Availability saved" }); },
   });
   const toggle = (d: number) => setSelectedDays(p => p.includes(d) ? p.filter(x => x !== d) : [...p, d].sort());
@@ -386,6 +387,21 @@ function AvailabilityTab({ clientId, avail, qc, toast }: { clientId: number; ava
         </div>
       </div>
       <div className="space-y-1.5"><Label className="text-sm font-medium">Notification email</Label><Input type="email" value={email} onChange={e => setEmail(e.target.value)} className="bg-background border-border" placeholder="you@company.com" /></div>
+      <div className="flex items-center justify-between rounded-lg border border-border px-4 py-3">
+        <div>
+          <p className="text-sm font-medium">Prevent appointment overlaps</p>
+          <p className="text-xs text-muted-foreground mt-0.5">When enabled, the AI agent will only offer available time slots based on existing bookings.</p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={preventOverlaps}
+          onClick={() => setPreventOverlaps(p => !p)}
+          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none ${preventOverlaps ? "bg-primary" : "bg-secondary"}`}
+        >
+          <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition-transform ${preventOverlaps ? "translate-x-5" : "translate-x-0"}`} />
+        </button>
+      </div>
       <div className="flex justify-end pt-2 border-t border-border"><Button onClick={() => mutation.mutate()} disabled={mutation.isPending}>{mutation.isPending ? "Saving…" : "Save availability"}</Button></div>
     </div>
   );

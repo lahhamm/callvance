@@ -7,6 +7,7 @@ import {
 } from "@workspace/db";
 import { adminAuth } from "../middlewares/admin-auth";
 import Anthropic from "@anthropic-ai/sdk";
+import { computeSlots, getNextAvailableDays, formatSlotsForPrompt } from "../lib/availability-slots";
 
 const router = Router();
 router.use(adminAuth);
@@ -184,8 +185,8 @@ router.get("/admin/clients/:id/availability", async (req, res) => {
 router.put("/admin/clients/:id/availability", async (req, res) => {
   const clientId = Number(req.params.id);
   await ensureClientAvailability(clientId);
-  const { timezone, notificationEmail, availableDays, startTime, endTime, slotDurationMinutes } = req.body as {
-    timezone?: string; notificationEmail?: string | null; availableDays?: number[]; startTime?: string; endTime?: string; slotDurationMinutes?: number;
+  const { timezone, notificationEmail, availableDays, startTime, endTime, slotDurationMinutes, preventOverlaps } = req.body as {
+    timezone?: string; notificationEmail?: string | null; availableDays?: number[]; startTime?: string; endTime?: string; slotDurationMinutes?: number; preventOverlaps?: boolean;
   };
   const updated = await db.update(availabilityTable).set({
     ...(timezone && { timezone }),
@@ -194,6 +195,7 @@ router.put("/admin/clients/:id/availability", async (req, res) => {
     ...(startTime && { startTime }),
     ...(endTime && { endTime }),
     ...(slotDurationMinutes && { slotDurationMinutes }),
+    ...(preventOverlaps !== undefined && { preventOverlaps }),
     updatedAt: new Date(),
   }).where(eq(availabilityTable.clientId, clientId)).returning();
   res.json(serializeAvail(updated[0]));
@@ -306,9 +308,17 @@ router.post("/admin/clients/:id/calls/initiate", async (req, res) => {
   const replitDomain = process.env.REPLIT_DEV_DOMAIN;
   const webhookUrl = replitDomain ? `https://${replitDomain}/api/calls/webhook` : null;
 
-  const task = config.qualificationCriteria?.trim()
+  let task = config.qualificationCriteria?.trim()
     ? `${config.prompt}\n\nQualification Criteria:\n${config.qualificationCriteria}`
     : config.prompt;
+  const avail = await ensureClientAvailability(clientId);
+  if (avail.preventOverlaps) {
+    const nextDays = getNextAvailableDays(5, avail);
+    const allSlots: Date[] = [];
+    for (const day of nextDays) { allSlots.push(...await computeSlots(clientId, day, avail)); }
+    const slotsText = formatSlotsForPrompt(allSlots, avail.timezone);
+    if (slotsText) task = `${task}\n\n${slotsText}`;
+  }
   const blandPayload: Record<string, unknown> = {
     phone_number: contact[0].phone, task, voice: config.voice,
     first_sentence: config.firstMessage, max_duration: config.maxDuration,
@@ -484,9 +494,17 @@ router.post("/admin/clients/:id/calls/bulk", async (req, res) => {
 
       const replitDomain = process.env.REPLIT_DEV_DOMAIN;
       const webhookUrl = replitDomain ? `https://${replitDomain}/api/calls/webhook` : null;
-      const bulkTask = config.qualificationCriteria?.trim()
+      let bulkTask = config.qualificationCriteria?.trim()
         ? `${config.prompt}\n\nQualification Criteria:\n${config.qualificationCriteria}`
         : config.prompt;
+      const bulkAvail = await ensureClientAvailability(clientId);
+      if (bulkAvail.preventOverlaps) {
+        const nextDays = getNextAvailableDays(5, bulkAvail);
+        const allSlots: Date[] = [];
+        for (const day of nextDays) { allSlots.push(...await computeSlots(clientId, day, bulkAvail)); }
+        const slotsText = formatSlotsForPrompt(allSlots, bulkAvail.timezone);
+        if (slotsText) bulkTask = `${bulkTask}\n\n${slotsText}`;
+      }
       const blandPayload: Record<string, unknown> = {
         phone_number: contact[0].phone, task: bulkTask, voice: config.voice,
         first_sentence: config.firstMessage, max_duration: config.maxDuration,

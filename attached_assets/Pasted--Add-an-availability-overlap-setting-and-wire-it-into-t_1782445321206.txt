@@ -1,0 +1,32 @@
+
+Add an availability overlap setting and wire it into the AI booking flow. Here is exactly what to build:
+1. New setting in the Schedule tab
+Add a toggle to the existing availability settings form on the client detail Schedule tab. Label it "Prevent appointment overlaps". Default is on (overlaps blocked). Save this as a new boolean column preventOverlaps on the availability_settings table. Add the column to the Drizzle schema and run the migration.
+2. Update the availability API
+GET and PUT /api/admin/clients/:id/availability should include preventOverlaps in the response and accept it in the request body.
+3. Availability slot checker endpoint
+Create a new endpoint:
+GET /api/client/:token/availability/slots?date=YYYY-MM-DD
+This endpoint should:
+
+Load the client's availability_settings (days, start time, end time, slot duration, timezone, preventOverlaps)
+If preventOverlaps is false: return all slots for that day as available regardless of existing bookings
+If preventOverlaps is true: fetch all confirmed bookings for that day, remove any slots that overlap with an existing booking, return only the remaining free slots
+Return slots as an array of ISO datetime strings in the client's timezone
+Return an empty array if the requested day is not in the client's availableDays
+
+4. Inject availability into the BlandAI prompt
+When initiating a call (POST /api/admin/clients/:id/calls/initiate and the bulk route), if preventOverlaps is true:
+
+Fetch available slots for the next 5 business days using the same slot-checking logic
+Format them as a readable list grouped by date
+Append to the task string sent to BlandAI:
+
+Available appointment slots (only offer these exact times, do not suggest any other times):
+Monday June 30: 9:00 AM, 9:30 AM, 10:00 AM
+Tuesday July 1: 2:00 PM, 2:30 PM
+(etc.)
+If preventOverlaps is false, do not append anything — the agent can discuss scheduling freely without constraints.
+5. No changes to the client portal
+Do not add anything to the client-facing dashboard. This is an admin and backend-only feature.
+Keep the same stack. Do not change anything unrelated to this feature.
