@@ -196,6 +196,22 @@ router.get("/admin/clients/:id/calls", async (req, res) => {
   res.json(calls.map(serializeCall));
 });
 
+// ── PATCH /admin/clients/:id/calls/:callId — update call fields (contactName, notes, etc.) ──
+router.patch("/admin/clients/:id/calls/:callId", async (req, res) => {
+  const clientId = Number(req.params.id);
+  const callId = Number(req.params.callId);
+  const { contactName, status, notes } = req.body as { contactName?: string; status?: string; notes?: string };
+  const updateData: Record<string, unknown> = {};
+  if (contactName !== undefined) updateData.contactName = contactName;
+  if (status !== undefined) updateData.status = status;
+  if (notes !== undefined) updateData.notes = notes;
+  if (Object.keys(updateData).length === 0) { res.status(400).json({ error: "Nothing to update" }); return; }
+  const updated = await db.update(callsTable).set(updateData as Partial<typeof callsTable.$inferSelect>)
+    .where(and(eq(callsTable.id, callId), eq(callsTable.clientId, clientId))).returning();
+  if (!updated[0]) { res.status(404).json({ error: "Not found" }); return; }
+  res.json(serializeCall(updated[0]));
+});
+
 // ── POST /admin/clients/:id/calls/:callId/analyze — re-run AI analysis on a completed call ──
 router.post("/admin/clients/:id/calls/:callId/analyze", async (req, res) => {
   const clientId = Number(req.params.id);

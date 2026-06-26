@@ -1,10 +1,9 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Phone, Calendar, Clock, LogOut, PhoneCall } from "lucide-react";
+import { Phone, Calendar, Clock, LogOut, PhoneCall, ChevronDown, X } from "lucide-react";
 import { getClientToken, getClientName, clearSession } from "@/lib/auth";
 import { useLocation } from "wouter";
 
-type ClientInfo = { id: number; name: string; businessType: string };
 type Call = {
   id: number; contactName?: string; contactPhone: string; status: string;
   summary?: string; leadScore?: string; durationSeconds?: number; createdAt: string;
@@ -43,8 +42,29 @@ function formatDate(iso: string, timezone?: string | null) {
   return `${time} ${abbr}`;
 }
 
+function SummaryModal({ summary, onClose }: { summary: string; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40" onClick={onClose}>
+      <div
+        className="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6 relative"
+        onClick={e => e.stopPropagation()}
+      >
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 text-gray-400 hover:text-gray-700 transition-colors"
+        >
+          <X className="w-5 h-5" />
+        </button>
+        <h3 className="text-sm font-semibold text-gray-900 mb-3">Call Summary</h3>
+        <p className="text-sm text-gray-600 leading-relaxed">{summary}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function ClientPortal() {
   const [tab, setTab] = useState<"calls" | "calendar">("calls");
+  const [expandedSummary, setExpandedSummary] = useState<string | null>(null);
   const [, navigate] = useLocation();
   const token = getClientToken();
   const clientName = getClientName();
@@ -71,6 +91,10 @@ export default function ClientPortal() {
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {expandedSummary && (
+        <SummaryModal summary={expandedSummary} onClose={() => setExpandedSummary(null)} />
+      )}
+
       {/* Header */}
       <header className="bg-white border-b border-gray-200">
         <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
@@ -137,15 +161,23 @@ export default function ClientPortal() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-gray-100 bg-gray-50">
-                    {["Lead", "Phone", "Date", "Score", "Summary"].map(h => (
-                      <th key={h} className="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">{h}</th>
-                    ))}
+                    <th className="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Contact</th>
+                    <th className="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Phone</th>
+                    <th className="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
+                    <th className="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Score</th>
+                    <th className="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                      Summary <span className="normal-case font-normal text-gray-400">(click to expand)</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {calls.map(c => (
                     <tr key={c.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-5 py-3.5 font-medium text-gray-900">{c.contactName || "—"}</td>
+                      <td className="px-5 py-3.5 font-medium text-gray-900">
+                        {c.contactName
+                          ? c.contactName
+                          : <span className="text-gray-400 italic text-xs">Unknown</span>}
+                      </td>
                       <td className="px-5 py-3.5 font-mono text-xs text-gray-500">{c.contactPhone}</td>
                       <td className="px-5 py-3.5 text-gray-500 text-xs whitespace-nowrap">
                         <div>{new Date(c.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</div>
@@ -153,9 +185,19 @@ export default function ClientPortal() {
                       </td>
                       <td className="px-5 py-3.5"><LeadScoreBadge score={c.leadScore} /></td>
                       <td className="px-5 py-3.5 text-gray-500 text-xs max-w-xs">
-                        {c.summary
-                          ? <p className="line-clamp-2 leading-relaxed">{c.summary}</p>
-                          : <span className="text-gray-300">No summary</span>}
+                        {c.summary ? (
+                          <button
+                            onClick={() => setExpandedSummary(c.summary!)}
+                            className="text-left w-full group"
+                          >
+                            <p className="line-clamp-2 leading-relaxed group-hover:text-gray-800 transition-colors">{c.summary}</p>
+                            <span className="inline-flex items-center gap-0.5 text-blue-500 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-[11px]">
+                              Read more <ChevronDown className="w-3 h-3" />
+                            </span>
+                          </button>
+                        ) : (
+                          <span className="text-gray-300">No summary yet</span>
+                        )}
                       </td>
                     </tr>
                   ))}
