@@ -36,7 +36,7 @@ type Availability = { id: number; timezone: string; notificationEmail?: string; 
 const VOICES = ["maya", "ryan", "adriana", "tina", "matt", "evelyn"];
 const DAYS = [{ value: 0, label: "Sun" }, { value: 1, label: "Mon" }, { value: 2, label: "Tue" }, { value: 3, label: "Wed" }, { value: 4, label: "Thu" }, { value: 5, label: "Fri" }, { value: 6, label: "Sat" }];
 const TIMEZONES = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London", "Europe/Paris", "Asia/Tokyo", "Asia/Singapore", "Australia/Sydney"];
-const TABS = ["Contacts", "Config", "Calls", "Bookings", "Schedule", "Access"] as const;
+const TABS = ["Contacts", "Agent Configuration", "Calls", "Bookings", "Schedule", "Access"] as const;
 
 function apiFetch(path: string, init?: RequestInit) {
   return fetch(`/api${path}`, { ...init, headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers as Record<string, string> ?? {}) } }).then(r => { if (!r.ok) throw new Error("API error"); return r.json(); });
@@ -124,7 +124,7 @@ export default function ClientDetail() {
       </div>
 
       {tab === "Contacts" && <ContactsTab clientId={clientId} contacts={contacts} qc={qc} toast={toast} />}
-      {tab === "Config" && config && <ConfigTab clientId={clientId} config={config} qc={qc} toast={toast} />}
+      {tab === "Agent Configuration" && config && <ConfigTab clientId={clientId} config={config} qc={qc} toast={toast} />}
       {tab === "Calls" && <CallsTab clientId={clientId} calls={calls} onTranscript={setTranscript} qc={qc} toast={toast} />}
       {tab === "Bookings" && <BookingsTab clientId={clientId} bookings={bookings} qc={qc} toast={toast} />}
       {tab === "Schedule" && avail && <AvailabilityTab clientId={clientId} avail={avail} qc={qc} toast={toast} />}
