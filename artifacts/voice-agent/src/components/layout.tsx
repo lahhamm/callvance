@@ -7,10 +7,6 @@ import { ChatBox } from "./chat-box";
 const NAV_ITEMS = [
   { href: "/admin", label: "Clients", icon: Shield, exact: true },
   { href: "/admin/calls", label: "All Calls", icon: Activity },
-  { href: "/contacts", label: "Contacts", icon: Users },
-  { href: "/calls", label: "Call History", icon: Phone },
-  { href: "/bookings", label: "Bookings", icon: CalendarDays },
-  { href: "/agent", label: "Agent Config", icon: Settings },
 ];
 
 export function Layout({ children }: { children: React.ReactNode }) {

@@ -4,11 +4,6 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Layout } from "@/components/layout";
 import NotFound from "@/pages/not-found";
-import Dashboard from "@/pages/dashboard";
-import Contacts from "@/pages/contacts";
-import Calls from "@/pages/calls";
-import AgentConfigPage from "@/pages/agent";
-import BookingsPage from "@/pages/bookings";
 import LoginPage from "@/pages/login";
 import AdminHome from "@/pages/admin/index";
 import ClientDetail from "@/pages/admin/client-detail";
@@ -43,10 +38,6 @@ function AdminSection() {
           <Route path="/admin" component={AdminHome} />
           <Route path="/admin/calls" component={GlobalCallsFeed} />
           <Route path="/admin/clients/:id" component={ClientDetail} />
-          <Route path="/contacts" component={Contacts} />
-          <Route path="/calls" component={Calls} />
-          <Route path="/bookings" component={BookingsPage} />
-          <Route path="/agent" component={AgentConfigPage} />
           <Route component={NotFound} />
         </Switch>
       </Layout>
@@ -84,10 +75,6 @@ export default function App() {
             <Route path="/admin">{() => <AdminSection />}</Route>
             <Route path="/admin/calls">{() => <AdminSection />}</Route>
             <Route path="/admin/clients/:id">{() => <AdminSection />}</Route>
-            <Route path="/contacts">{() => <AdminSection />}</Route>
-            <Route path="/calls">{() => <AdminSection />}</Route>
-            <Route path="/bookings">{() => <AdminSection />}</Route>
-            <Route path="/agent">{() => <AdminSection />}</Route>
             <Route path="/" component={RootRedirect} />
             <Route component={NotFound} />
           </Switch>
