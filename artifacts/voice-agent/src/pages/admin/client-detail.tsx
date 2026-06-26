@@ -123,7 +123,7 @@ export default function ClientDetail() {
         ))}
       </div>
 
-      {tab === "Contacts" && <ContactsTab clientId={clientId} contacts={contacts} qc={qc} toast={toast} />}
+      {tab === "Contacts" && <ContactsTab clientId={clientId} contacts={contacts} calls={calls} qc={qc} toast={toast} />}
       {tab === "Agent Configuration" && config && <ConfigTab clientId={clientId} config={config} qc={qc} toast={toast} />}
       {tab === "Calls" && <CallsTab clientId={clientId} calls={calls} onTranscript={setTranscript} qc={qc} toast={toast} />}
       {tab === "Bookings" && <BookingsTab clientId={clientId} bookings={bookings} qc={qc} toast={toast} />}
@@ -149,9 +149,12 @@ export default function ClientDetail() {
   );
 }
 
-function ContactsTab({ clientId, contacts, qc, toast }: { clientId: number; contacts: Contact[]; qc: ReturnType<typeof useQueryClient>; toast: ReturnType<typeof useToast>["toast"] }) {
+function ContactsTab({ clientId, contacts, calls, qc, toast }: { clientId: number; contacts: Contact[]; calls: Call[]; qc: ReturnType<typeof useQueryClient>; toast: ReturnType<typeof useToast>["toast"] }) {
   const [form, setForm] = useState({ name: "", phone: "", email: "", company: "" });
   const [show, setShow] = useState(false);
+  const [showBulkDialog, setShowBulkDialog] = useState(false);
+
+  const hasInProgress = calls.some(c => c.status === "in-progress" || c.status === "queued");
 
   const createMutation = useMutation({
     mutationFn: () => apiFetch(`/admin/clients/${clientId}/contacts`, { method: "POST", body: JSON.stringify(form) }),
@@ -165,10 +168,25 @@ function ContactsTab({ clientId, contacts, qc, toast }: { clientId: number; cont
     mutationFn: (contactId: number) => apiFetch(`/admin/clients/${clientId}/contacts/${contactId}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin-contacts", clientId] }),
   });
+  const bulkCallMutation = useMutation({
+    mutationFn: () => apiFetch(`/admin/clients/${clientId}/calls/bulk`, { method: "POST", body: JSON.stringify({ contactIds: contacts.map(c => c.id) }) }),
+    onSuccess: (data: { succeeded: number; failed: number }) => {
+      qc.invalidateQueries({ queryKey: ["admin-calls", clientId] });
+      qc.invalidateQueries({ queryKey: ["admin-contacts", clientId] });
+      setShowBulkDialog(false);
+      toast({ title: `Calls initiated: ${data.succeeded} succeeded, ${data.failed} failed` });
+    },
+    onError: () => { setShowBulkDialog(false); toast({ title: "Bulk call failed", variant: "destructive" }); },
+  });
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        {contacts.length > 0 && (
+          <Button size="sm" variant="outline" onClick={() => setShowBulkDialog(true)} disabled={hasInProgress || bulkCallMutation.isPending} className="gap-1.5 h-8 text-xs">
+            <Zap className="w-3 h-3" />{bulkCallMutation.isPending ? "Calling…" : "Call All"}
+          </Button>
+        )}
         <Button size="sm" onClick={() => setShow(true)} className="gap-1.5"><Plus className="w-3.5 h-3.5" />Add contact</Button>
       </div>
       <div className="bg-card border border-border rounded-lg overflow-hidden divide-y divide-border">
@@ -191,6 +209,20 @@ function ContactsTab({ clientId, contacts, qc, toast }: { clientId: number; cont
           ))
         }
       </div>
+      <Dialog open={showBulkDialog} onOpenChange={setShowBulkDialog}>
+        <DialogContent className="bg-card border-border">
+          <DialogHeader><DialogTitle>Call All Contacts</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground py-2">
+            This will initiate calls to all <span className="font-semibold text-foreground">{contacts.length}</span> contact{contacts.length !== 1 ? "s" : ""}. Are you sure?
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setShowBulkDialog(false)}>Cancel</Button>
+            <Button onClick={() => bulkCallMutation.mutate()} disabled={bulkCallMutation.isPending}>
+              {bulkCallMutation.isPending ? "Calling…" : `Call ${contacts.length} contact${contacts.length !== 1 ? "s" : ""}`}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       <Dialog open={show} onOpenChange={setShow}>
         <DialogContent className="bg-card border-border">
           <DialogHeader><DialogTitle>Add contact</DialogTitle></DialogHeader>

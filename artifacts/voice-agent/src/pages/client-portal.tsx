@@ -141,6 +141,53 @@ function NoCalConfig() {
   );
 }
 
+function formatBookingDate(iso: string, timezone?: string | null) {
+  const tz = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const date = new Date(iso);
+  const formatted = date.toLocaleString("en-US", {
+    timeZone: tz, weekday: "short", month: "short", day: "numeric",
+    year: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+  const tzAbbr = date.toLocaleTimeString("en-US", { timeZone: tz, timeZoneName: "short" }).split(" ").pop() ?? "";
+  return `${formatted} ${tzAbbr}`;
+}
+
+function BookingsList({ bookings }: { bookings: Booking[] }) {
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+      <div className="px-5 py-3 border-b border-gray-100 bg-gray-50 flex items-center gap-2">
+        <Calendar className="w-4 h-4 text-gray-400" />
+        <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Upcoming Appointments</h3>
+        <span className="ml-auto bg-blue-50 text-blue-600 text-xs font-medium px-2 py-0.5 rounded-full">{bookings.length}</span>
+      </div>
+      {bookings.length === 0 ? (
+        <div className="p-8 text-center text-gray-400 text-sm">No upcoming appointments scheduled.</div>
+      ) : (
+        <div className="divide-y divide-gray-100">
+          {bookings.map(b => (
+            <div key={b.id} className="px-5 py-4 flex items-start gap-4">
+              <div className="flex-1 min-w-0">
+                <div className="font-medium text-sm text-gray-900">
+                  {b.contactName || <span className="italic text-gray-400">Unknown contact</span>}
+                </div>
+                {b.contactPhone && (
+                  <div className="text-xs font-mono text-gray-500 mt-0.5">{b.contactPhone}</div>
+                )}
+                {b.notes && (
+                  <div className="text-xs text-gray-400 mt-1 leading-relaxed">{b.notes}</div>
+                )}
+              </div>
+              <div className="text-right shrink-0">
+                <div className="text-xs font-medium text-gray-700">{formatBookingDate(b.scheduledAt, b.timezone)}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ClientPortal() {
   const [tab, setTab] = useState<"calls" | "calendar">("calls");
   const [expandedSummary, setExpandedSummary] = useState<string | null>(null);
@@ -290,11 +337,15 @@ export default function ClientPortal() {
           </div>
         )}
 
-        {/* Calendar — Cal.com embed */}
+        {/* Calendar — DB bookings list + Cal.com embed */}
         {tab === "calendar" && (
-          calReady
-            ? <CalEmbed calUsername={clientInfo!.calUsername!} calEventId={clientInfo!.calEventId!} />
-            : <NoCalConfig />
+          <div className="space-y-6">
+            <BookingsList bookings={bookings} />
+            {calReady
+              ? <CalEmbed calUsername={clientInfo!.calUsername!} calEventId={clientInfo!.calEventId!} />
+              : <NoCalConfig />
+            }
+          </div>
         )}
       </div>
     </div>

@@ -7,6 +7,7 @@ import {
   GetCallParams,
 } from "@workspace/api-zod";
 import { sendBookingEmail } from "./bookings";
+import { adminAuth } from "../middlewares/admin-auth";
 
 const router = Router();
 const BLAND_API_KEY = process.env.BLAND_AI_API_KEY;
@@ -22,7 +23,6 @@ function serializeCall(c: typeof callsTable.$inferSelect) {
   };
 }
 
-// Strip markdown fences Claude sometimes wraps around JSON
 function parseClaudeJSON<T>(text: string): T {
   const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
   return JSON.parse(cleaned) as T;
@@ -32,7 +32,6 @@ async function initiateCallForContact(contactId: number) {
   const contact = await db.select().from(contactsTable).where(eq(contactsTable.id, contactId)).limit(1);
   if (!contact[0]) throw new Error(`Contact ${contactId} not found`);
 
-  // Use per-client config if the contact belongs to a client, else fall back to first available
   const configQuery = contact[0].clientId
     ? db.select().from(agentConfigTable).where(eq(agentConfigTable.clientId, contact[0].clientId)).limit(1)
     : db.select().from(agentConfigTable).limit(1);
@@ -54,9 +53,13 @@ async function initiateCallForContact(contactId: number) {
   const webhookUrl = replitDomain ? `https://${replitDomain}/api/calls/webhook` : null;
   console.log(`[calls] Initiating call id=${callRecord.id} webhook=${webhookUrl ?? "NONE"}`);
 
+  const task = config.qualificationCriteria?.trim()
+    ? `${config.prompt}\n\nQualification Criteria:\n${config.qualificationCriteria}`
+    : config.prompt;
+
   const blandPayload: Record<string, unknown> = {
     phone_number: contact[0].phone,
-    task: config.prompt,
+    task,
     voice: config.voice,
     first_sentence: config.firstMessage,
     max_duration: config.maxDuration,
@@ -187,7 +190,6 @@ ${transcript.slice(0, 3000)}`
   }
 }
 
-// ── Background polling — syncs every in-progress call with BlandAI every 30s ─
 export async function syncInProgressCalls(): Promise<void> {
   if (!BLAND_API_KEY) return;
   try {
@@ -214,7 +216,7 @@ export async function syncInProgressCalls(): Promise<void> {
 
         const isCompleted = data.status === "completed" || data.status === "ended";
         const isFailed = data.status === "failed" || data.status === "error" || data.status === "no-answer";
-        if (!isCompleted && !isFailed) continue; // Still in progress, skip
+        if (!isCompleted && !isFailed) continue;
 
         const updateData: Partial<typeof callsTable.$inferSelect> = {};
         if (isCompleted) { updateData.status = "completed"; updateData.endedAt = new Date(); }
@@ -229,7 +231,6 @@ export async function syncInProgressCalls(): Promise<void> {
         }
         if (data.call_length) updateData.durationSeconds = Math.round(data.call_length * 60);
 
-        // Run AI analysis for completed calls with transcripts
         if (isCompleted && transcriptText) {
           const aiResult = await generateAISummary(transcriptText, call.contactName);
           if (aiResult.summary) updateData.summary = aiResult.summary;
@@ -238,7 +239,6 @@ export async function syncInProgressCalls(): Promise<void> {
 
           await db.update(callsTable).set(updateData).where(eq(callsTable.id, call.id));
 
-          // Auto-create booking if a time was confirmed
           const existingBooking = await db.select().from(bookingsTable).where(eq(bookingsTable.callId, call.id)).limit(1);
           if (!existingBooking[0]) {
             await extractBookingFromTranscript(transcriptText, call.contactName ?? null, call.contactPhone, call.contactId ?? null, call.id);
@@ -258,13 +258,13 @@ export async function syncInProgressCalls(): Promise<void> {
 }
 
 // ── GET /calls ───────────────────────────────────────────────────────────────
-router.get("/calls", async (_req, res) => {
+router.get("/calls", adminAuth, async (_req, res) => {
   const calls = await db.select().from(callsTable).orderBy(desc(callsTable.createdAt));
   res.json(calls.map(serializeCall));
 });
 
 // ── GET /calls/stats/summary ─────────────────────────────────────────────────
-router.get("/calls/stats/summary", async (_req, res) => {
+router.get("/calls/stats/summary", adminAuth, async (_req, res) => {
   const allCalls = await db.select().from(callsTable);
   const totalContacts = await db.select({ count: count() }).from(contactsTable);
   const total = allCalls.length;
@@ -277,7 +277,7 @@ router.get("/calls/stats/summary", async (_req, res) => {
 });
 
 // ── POST /calls/initiate ──────────────────────────────────────────────────────
-router.post("/calls/initiate", async (req, res) => {
+router.post("/calls/initiate", adminAuth, async (req, res) => {
   const parsed = InitiateCallBody.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "Invalid input" }); return; }
 
@@ -291,7 +291,7 @@ router.post("/calls/initiate", async (req, res) => {
 });
 
 // ── POST /calls/bulk ──────────────────────────────────────────────────────────
-router.post("/calls/bulk", async (req, res) => {
+router.post("/calls/bulk", adminAuth, async (req, res) => {
   const { contactIds } = req.body as { contactIds: number[] };
   if (!Array.isArray(contactIds) || contactIds.length === 0) {
     res.status(400).json({ error: "contactIds must be a non-empty array" });
@@ -313,7 +313,7 @@ router.post("/calls/bulk", async (req, res) => {
   res.json({ results, succeeded: results.filter(r => r.success).length, failed: results.filter(r => !r.success).length });
 });
 
-// ── POST /calls/webhook ───────────────────────────────────────────────────────
+// ── POST /calls/webhook ─────────────────────────────────────────────── PUBLIC
 router.post("/calls/webhook", async (req, res) => {
   const body = req.body as {
     call_id?: string;
@@ -329,7 +329,6 @@ router.post("/calls/webhook", async (req, res) => {
 
   res.json({ ok: true });
 
-  // Look up call record — try blandCallId first, then metadata.call_db_id as fallback
   let callRecord: typeof callsTable.$inferSelect | undefined;
 
   if (body.call_id) {
@@ -359,7 +358,6 @@ router.post("/calls/webhook", async (req, res) => {
   else if (isFailed) { updateData.status = "failed"; updateData.endedAt = new Date(); }
   if (body.transcript) updateData.transcript = body.transcript;
   if (body.summary) updateData.summary = body.summary;
-  // call_length is in MINUTES from BlandAI; duration (if present) is in seconds
   if (body.call_length) updateData.durationSeconds = Math.round(body.call_length * 60);
   else if (body.duration) updateData.durationSeconds = Math.round(body.duration);
 
@@ -396,7 +394,7 @@ router.post("/calls/webhook", async (req, res) => {
 });
 
 // ── GET /calls/:id ────────────────────────────────────────────────────────────
-router.get("/calls/:id", async (req, res) => {
+router.get("/calls/:id", adminAuth, async (req, res) => {
   const params = GetCallParams.safeParse({ id: Number(req.params.id) });
   if (!params.success) { res.status(400).json({ error: "Invalid id" }); return; }
 
@@ -405,7 +403,6 @@ router.get("/calls/:id", async (req, res) => {
 
   const call = calls[0];
 
-  // On-demand sync from Bland AI if still in-progress
   if (call.blandCallId && (call.status === "in-progress" || call.status === "queued") && BLAND_API_KEY) {
     try {
       const blandRes = await fetch(`${BLAND_BASE_URL}/calls/${call.blandCallId}`, {

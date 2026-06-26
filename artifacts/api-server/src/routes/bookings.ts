@@ -38,7 +38,7 @@ async function sendBookingEmail(booking: {
   const html = `
     <div style="font-family:monospace;max-width:600px;margin:0 auto;background:#0a0a0a;color:#e5e5e5;padding:32px;border:1px solid #1f1f1f;">
       <div style="color:#00ff88;font-size:18px;font-weight:bold;margin-bottom:24px;text-transform:uppercase;letter-spacing:2px;">
-        ⚡ NEXUS_VOICE — New Booking
+        ⚡ Callvance — New Booking
       </div>
       <table style="width:100%;border-collapse:collapse;">
         <tr><td style="padding:8px 0;color:#888;text-transform:uppercase;font-size:11px;letter-spacing:1px;">Lead</td><td style="padding:8px 0;font-weight:bold;">${booking.contactName || "Unknown"}</td></tr>
@@ -60,7 +60,7 @@ async function sendBookingEmail(booking: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: "NEXUS_VOICE <onboarding@resend.dev>",
+        from: "Callvance <onboarding@resend.dev>",
         to: notificationEmail,
         subject: `New booking: ${booking.contactName || "Lead"} — ${formattedTime}`,
         html,

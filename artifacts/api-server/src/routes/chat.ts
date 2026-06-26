@@ -47,7 +47,7 @@ router.post("/chat", async (req, res) => {
         .join("\n")
     : "No calls yet.";
 
-  const systemPrompt = `You are a smart assistant that controls NEXUS_VOICE, an AI-powered outbound calling system.
+  const systemPrompt = `You are a smart assistant that controls Callvance, an AI-powered outbound calling system.
 
 You help users trigger calls and answer questions about their contacts and call history. Be concise and direct — this is a command center, not a chatbot.
 

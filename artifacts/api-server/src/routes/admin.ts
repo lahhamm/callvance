@@ -306,8 +306,11 @@ router.post("/admin/clients/:id/calls/initiate", async (req, res) => {
   const replitDomain = process.env.REPLIT_DEV_DOMAIN;
   const webhookUrl = replitDomain ? `https://${replitDomain}/api/calls/webhook` : null;
 
+  const task = config.qualificationCriteria?.trim()
+    ? `${config.prompt}\n\nQualification Criteria:\n${config.qualificationCriteria}`
+    : config.prompt;
   const blandPayload: Record<string, unknown> = {
-    phone_number: contact[0].phone, task: config.prompt, voice: config.voice,
+    phone_number: contact[0].phone, task, voice: config.voice,
     first_sentence: config.firstMessage, max_duration: config.maxDuration,
     record: true, answered_by_enabled: true,
     metadata: { call_db_id: callRecord.id, contact_id: contactId, client_id: clientId },
@@ -481,8 +484,11 @@ router.post("/admin/clients/:id/calls/bulk", async (req, res) => {
 
       const replitDomain = process.env.REPLIT_DEV_DOMAIN;
       const webhookUrl = replitDomain ? `https://${replitDomain}/api/calls/webhook` : null;
+      const bulkTask = config.qualificationCriteria?.trim()
+        ? `${config.prompt}\n\nQualification Criteria:\n${config.qualificationCriteria}`
+        : config.prompt;
       const blandPayload: Record<string, unknown> = {
-        phone_number: contact[0].phone, task: config.prompt, voice: config.voice,
+        phone_number: contact[0].phone, task: bulkTask, voice: config.voice,
         first_sentence: config.firstMessage, max_duration: config.maxDuration,
         record: true, metadata: { call_db_id: callRecord.id, contact_id: contactId, client_id: clientId },
       };
@@ -641,9 +647,12 @@ Rules:
           if (!BLAND_API_KEY) { callResult = { success: false, message: "BlandAI API key not configured." }; }
           else {
             const basePrompt = config.prompt ?? "You are a helpful AI assistant.";
-            const effectivePrompt = input.custom_topic
-              ? `${basePrompt}\n\nIMPORTANT — Special instructions for this call: ${input.custom_topic}`
+            const promptWithCriteria = config.qualificationCriteria?.trim()
+              ? `${basePrompt}\n\nQualification Criteria:\n${config.qualificationCriteria}`
               : basePrompt;
+            const effectivePrompt = input.custom_topic
+              ? `${promptWithCriteria}\n\nIMPORTANT — Special instructions for this call: ${input.custom_topic}`
+              : promptWithCriteria;
 
             const inserted = await db.insert(callsTable).values({
               clientId, contactId: contactDbId ?? null, contactName: contactName ?? null, contactPhone, status: "queued",
