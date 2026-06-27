@@ -347,8 +347,11 @@ export async function syncInProgressCalls(): Promise<void> {
     const inProgress = await db.select().from(callsTable)
       .where(inArray(callsTable.status, ["in-progress", "queued"]));
 
-    if (inProgress.length === 0) { console.log("[poll] No in-progress or queued calls to sync"); return; }
-    console.log(`[poll] Syncing ${inProgress.length} in-progress call(s) with BlandAI`);
+    if (inProgress.length === 0) {
+      console.log("[poll] No in-progress or queued calls to sync — will still check for recently-completed calls missing transcript");
+    } else {
+      console.log(`[poll] Syncing ${inProgress.length} in-progress call(s) with BlandAI`);
+    }
 
     for (const call of inProgress) {
       if (!call.blandCallId) {
@@ -660,7 +663,12 @@ router.post("/calls/webhook", async (req, res) => {
     call_id?: string;
     status?: string;
     answered_by?: string;  // "human" | "voicemail" | "no-answer" | "unknown"
-    // BlandAI sends transcript as either a plain string or an array of turn objects
+    // BlandAI sends transcript in one of three fields depending on version:
+    //   concatenated_transcript — plain string (most common in webhooks)
+    //   transcripts — array of turn objects
+    //   transcript — either a string or array (older format)
+    concatenated_transcript?: string;
+    transcripts?: Array<{ user: string; text: string }>;
     transcript?: string | Array<{ user: string; text: string }>;
     summary?: string;
     duration?: number;
@@ -672,26 +680,27 @@ router.post("/calls/webhook", async (req, res) => {
   console.log(`[webhook] RAW BODY KEYS: ${Object.keys(body).join(", ")}`);
   console.log(`[webhook] call_id="${body.call_id}" status="${body.status}" answered_by="${body.answered_by ?? "?"}" call_length=${body.call_length ?? body.duration ?? "?"} metadata=${JSON.stringify(body.metadata)}`);
 
-  // Log the raw transcript before touching it so we can see exactly what BlandAI sent
+  // Log all transcript-related fields so we can see exactly what BlandAI sent
+  console.log(`[webhook] RAW concatenated_transcript: ${body.concatenated_transcript !== undefined ? `STRING length=${body.concatenated_transcript.length} preview="${body.concatenated_transcript.slice(0, 200)}"` : "MISSING"}`);
+  console.log(`[webhook] RAW transcripts (array): ${body.transcripts !== undefined ? `ARRAY turns=${body.transcripts.length} first="${JSON.stringify(body.transcripts[0] ?? null)}"` : "MISSING"}`);
   if (body.transcript === undefined || body.transcript === null) {
-    console.log(`[webhook] RAW transcript: MISSING (undefined/null) — no transcript in webhook payload`);
+    console.log(`[webhook] RAW transcript (singular): MISSING`);
   } else if (typeof body.transcript === "string") {
-    console.log(`[webhook] RAW transcript: STRING length=${body.transcript.length} preview="${body.transcript.slice(0, 300)}"`);
+    console.log(`[webhook] RAW transcript (singular): STRING length=${body.transcript.length} preview="${body.transcript.slice(0, 200)}"`);
   } else if (Array.isArray(body.transcript)) {
-    console.log(`[webhook] RAW transcript: ARRAY turns=${body.transcript.length} first_turn=${JSON.stringify(body.transcript[0] ?? null)}`);
-  } else {
-    console.log(`[webhook] RAW transcript: UNEXPECTED TYPE=${typeof body.transcript} value=${JSON.stringify(body.transcript).slice(0, 200)}`);
+    console.log(`[webhook] RAW transcript (singular): ARRAY turns=${body.transcript.length}`);
   }
 
-  // Normalize transcript to a plain string immediately — BlandAI sends it either way
+  // Normalize transcript to a plain string — check all three field names BlandAI may use
   let transcriptText: string | undefined;
-  if (body.transcript) {
-    transcriptText = typeof body.transcript === "string"
-      ? body.transcript
-      : body.transcript.filter(t => t.text?.trim()).map(t => `${t.user}: ${t.text}`).join("\n");
+  const rawTranscript = body.concatenated_transcript ?? body.transcript ?? body.transcripts;
+  if (rawTranscript) {
+    transcriptText = typeof rawTranscript === "string"
+      ? rawTranscript
+      : (rawTranscript as Array<{ user: string; text: string }>).filter(t => t.text?.trim()).map(t => `${t.user}: ${t.text}`).join("\n");
     if (!transcriptText.trim()) transcriptText = undefined;
   }
-  console.log(`[webhook] NORMALIZED transcript: ${transcriptText ? `${transcriptText.length} chars` : "EMPTY/UNDEFINED after normalization"}`);
+  console.log(`[webhook] NORMALIZED transcript: ${transcriptText ? `${transcriptText.length} chars` : "EMPTY/UNDEFINED — no transcript in any field"}`);
 
   // Acknowledge BlandAI immediately
   res.json({ ok: true });
@@ -794,13 +803,16 @@ router.post("/calls/webhook", async (req, res) => {
           });
           if (fetchRes.ok) {
             const fetchData = (await fetchRes.json()) as {
+              concatenated_transcript?: string;
+              transcripts?: Array<{ user: string; text: string }>;
               transcript?: string | Array<{ user: string; text: string }>;
               call_length?: number;
             };
-            if (fetchData.transcript) {
-              transcriptText = typeof fetchData.transcript === "string"
-                ? fetchData.transcript
-                : (fetchData.transcript as Array<{ user: string; text: string }>)
+            const fetchRaw = fetchData.concatenated_transcript ?? fetchData.transcript ?? fetchData.transcripts;
+            if (fetchRaw) {
+              transcriptText = typeof fetchRaw === "string"
+                ? fetchRaw
+                : (fetchRaw as Array<{ user: string; text: string }>)
                     .filter(t => t.text?.trim())
                     .map(t => `${t.user}: ${t.text}`)
                     .join("\n");
