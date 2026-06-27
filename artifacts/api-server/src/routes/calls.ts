@@ -773,9 +773,9 @@ router.get("/calls/:id", adminAuth, async (req, res) => {
 // Called by BlandAI mid-conversation to check real-time available slots.
 // Accept date as either a path segment (/slots/2026-06-30) or query string (/slots?date=2026-06-30)
 // BlandAI interpolates {{date}} in the URL path; query string is kept as a fallback for manual testing.
-router.get("/availability/:clientToken/slots/:date?", async (req, res) => {
+router.get("/availability/:clientToken/slots/:date", async (req, res) => {
   const { clientToken } = req.params;
-  const date = (req.params.date ?? (req.query as { date?: string }).date ?? "").trim();
+  const date = (req.params.date ?? "").trim();
 
   console.log(`[availability] ── REQUEST ── token="${clientToken}" date="${date || "MISSING"}"`);
 
