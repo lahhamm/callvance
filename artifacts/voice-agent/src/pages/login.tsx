@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { Lock, PhoneCall } from "lucide-react";
-import { setAdminSession, setClientSession } from "@/lib/auth";
+import { setAdminSession, setClientSession, isAdminAuthenticated, isClientAuthenticated } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
 
 type LoginResponse =
@@ -16,6 +16,9 @@ export default function LoginPage() {
 
   useEffect(() => {
     document.documentElement.classList.add("dark");
+    // Already authenticated — skip the login form
+    if (isAdminAuthenticated()) { navigate("/admin"); return; }
+    if (isClientAuthenticated()) { navigate("/portal"); return; }
   }, []);
 
   const handleLogin = async (e: React.FormEvent) => {

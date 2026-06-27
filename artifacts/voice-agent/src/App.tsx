@@ -66,8 +66,6 @@ function PortalSection() {
 }
 
 function RootRedirect() {
-  if (isAdminAuthenticated()) return <Redirect to="/admin" />;
-  if (isClientAuthenticated()) return <Redirect to="/portal" />;
   return <Redirect to="/login" />;
 }
 
