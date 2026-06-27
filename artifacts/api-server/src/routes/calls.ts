@@ -188,8 +188,13 @@ async function extractBookingFromTranscript(
       clientTimezone = availRows[0].timezone;
       slotDurationMinutes = availRows[0].slotDurationMinutes ?? 60;
       notificationEmail = availRows[0].notificationEmail ?? null;
-      notificationPhone = (availRows[0] as any).notificationPhone ?? null;
+      notificationPhone = availRows[0].notificationPhone ?? null;
+      console.log(`[booking] Availability row for clientId=${clientId}: timezone="${clientTimezone}" notificationEmail="${notificationEmail ?? "null"}" notificationPhone="${notificationPhone ?? "null"}"`);
+    } else {
+      console.log(`[booking] No availability row found for clientId=${clientId} — using defaults, no notifications`);
     }
+  } else {
+    console.log(`[booking] No clientId — skipping availability lookup, no notifications`);
   }
 
   console.log(`[booking] → Calling Claude (haiku) for booking extraction. transcriptLength=${transcript.length} timezone=${clientTimezone} preview="${transcript.slice(0, 200).replace(/\n/g, " ")}"`);

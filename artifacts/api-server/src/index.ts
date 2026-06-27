@@ -1,6 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { syncInProgressCalls } from "./routes/calls";
+import { logNotificationConfig } from "./lib/notifications";
 import { pool } from "@workspace/db";
 
 // ── Startup migrations ─────────────────────────────────────────────────────
@@ -26,6 +27,7 @@ if (Number.isNaN(port) || port <= 0) {
 }
 
 await runMigrations();
+logNotificationConfig();
 
 app.listen(port, (err) => {
   if (err) {
