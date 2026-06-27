@@ -317,6 +317,7 @@ export async function syncInProgressCalls(): Promise<void> {
 
         const data = (await blandRes.json()) as {
           status?: string;
+          answered_by?: string;
           transcript?: Array<{ user: string; text: string }> | string;
           transcripts?: Array<{ user: string; text: string }>;
           summary?: string;
@@ -327,7 +328,7 @@ export async function syncInProgressCalls(): Promise<void> {
 
         // BlandAI uses call_length (in minutes) on the GET endpoint; log whichever fields are present
         const rawDuration = data.call_length ?? data.total_duration ?? data.duration;
-        console.log(`[poll] BlandAI status="${data.status}" call_length=${data.call_length ?? "?"} duration=${data.duration ?? "?"} total_duration=${data.total_duration ?? "?"} has_transcript=${!!(data.transcript ?? data.transcripts)} for call id=${call.id}`);
+        console.log(`[poll] BlandAI status="${data.status}" answered_by="${data.answered_by ?? "?"}" call_length=${data.call_length ?? "?"} duration=${data.duration ?? "?"} total_duration=${data.total_duration ?? "?"} has_transcript=${!!(data.transcript ?? data.transcripts)} for call id=${call.id}`);
 
         const isCompleted = data.status === "completed" || data.status === "ended";
         const isFailed = data.status === "failed" || data.status === "error" || data.status === "no-answer";
@@ -336,9 +337,18 @@ export async function syncInProgressCalls(): Promise<void> {
           continue;
         }
 
+        // answered_by="human" → completed; anything else (voicemail, no-answer, unknown) → no-answer
+        const wasAnswered = data.answered_by === "human";
         const updateData: Partial<typeof callsTable.$inferSelect> = {};
-        if (isCompleted) { updateData.status = "completed"; updateData.endedAt = new Date(); }
-        else if (isFailed) { updateData.status = "failed"; updateData.endedAt = new Date(); }
+        if (isCompleted) {
+          if (wasAnswered) {
+            updateData.status = "completed"; updateData.endedAt = new Date();
+            console.log(`[poll] Call id=${call.id} answered by human → completed`);
+          } else {
+            updateData.status = "no-answer"; updateData.endedAt = new Date();
+            console.log(`[poll] Call id=${call.id} ended but answered_by="${data.answered_by ?? "unknown"}" → no-answer`);
+          }
+        } else if (isFailed) { updateData.status = "failed"; updateData.endedAt = new Date(); }
 
         // call_length is in minutes on BlandAI's GET endpoint; duration/total_duration may be in seconds
         if (rawDuration) {
@@ -409,7 +419,7 @@ export async function syncInProgressCalls(): Promise<void> {
           }
         }
 
-        if (isCompleted && transcriptText) {
+        if (isCompleted && wasAnswered && transcriptText) {
           console.log(`[poll] Running AI summary for call id=${call.id}`);
           const aiResult = await generateAISummary(transcriptText, call.contactName, call.id);
           if (aiResult.summary) updateData.summary = aiResult.summary;
@@ -418,13 +428,15 @@ export async function syncInProgressCalls(): Promise<void> {
           console.log(`[poll] AI result for call id=${call.id}: leadScore="${aiResult.leadScore}" summary="${aiResult.summary.slice(0, 80)}"`);
         } else if (isCompleted && !transcriptText) {
           console.log(`[poll] Call id=${call.id} completed with no transcript after follow-up — marking complete with no summary`);
+        } else if (isCompleted && !wasAnswered) {
+          console.log(`[poll] Call id=${call.id} not answered (answered_by="${data.answered_by ?? "unknown"}") — skipping AI summary`);
         }
 
         console.log(`[poll] Writing DB update for call id=${call.id}: status=${updateData.status} hasTranscript=${!!updateData.transcript} hasSummary=${!!updateData.summary} leadScore=${updateData.leadScore ?? "none"} durationSeconds=${updateData.durationSeconds ?? "none"}`);
         await db.update(callsTable).set(updateData).where(eq(callsTable.id, call.id));
         console.log(`[poll] DB update done for call id=${call.id} → status=${updateData.status}`);
 
-        if (isCompleted && transcriptText) {
+        if (isCompleted && wasAnswered && transcriptText) {
           const existingBooking = await db.select().from(bookingsTable).where(eq(bookingsTable.callId, call.id)).limit(1);
           if (!existingBooking[0]) {
             console.log(`[poll] Attempting booking extraction for call id=${call.id}`);
@@ -503,6 +515,7 @@ router.post("/calls/webhook", async (req, res) => {
   const body = req.body as {
     call_id?: string;
     status?: string;
+    answered_by?: string;  // "human" | "voicemail" | "no-answer" | "unknown"
     // BlandAI sends transcript as either a plain string or an array of turn objects
     transcript?: string | Array<{ user: string; text: string }>;
     summary?: string;
@@ -513,7 +526,7 @@ router.post("/calls/webhook", async (req, res) => {
 
   console.log(`[webhook] ===== INCOMING WEBHOOK =====`);
   console.log(`[webhook] RAW BODY KEYS: ${Object.keys(body).join(", ")}`);
-  console.log(`[webhook] call_id="${body.call_id}" status="${body.status}" call_length=${body.call_length ?? body.duration ?? "?"} metadata=${JSON.stringify(body.metadata)}`);
+  console.log(`[webhook] call_id="${body.call_id}" status="${body.status}" answered_by="${body.answered_by ?? "?"}" call_length=${body.call_length ?? body.duration ?? "?"} metadata=${JSON.stringify(body.metadata)}`);
 
   // Log the raw transcript before touching it so we can see exactly what BlandAI sent
   if (body.transcript === undefined || body.transcript === null) {
@@ -568,17 +581,36 @@ router.post("/calls/webhook", async (req, res) => {
   // ── Step 2: Determine new status ────────────────────────────────────────────
   const isCompleted = body.status === "completed" || body.status === "ended";
   const isFailed = body.status === "failed" || body.status === "error" || body.status === "no-answer";
-  console.log(`[webhook] Status mapping: incoming="${body.status}" → isCompleted=${isCompleted} isFailed=${isFailed}`);
+  // answered_by="human" means the call was actually picked up; voicemail/no-answer/unknown → no-answer
+  const wasAnswered = body.answered_by === "human";
+  console.log(`[webhook] Status mapping: incoming="${body.status}" answered_by="${body.answered_by ?? "?"}" → isCompleted=${isCompleted} isFailed=${isFailed} wasAnswered=${wasAnswered}`);
 
   const updateData: Partial<typeof callsTable.$inferSelect> = {};
-  if (isCompleted) { updateData.status = "completed"; updateData.endedAt = new Date(); }
-  else if (isFailed) { updateData.status = "failed"; updateData.endedAt = new Date(); }
+  if (isCompleted) {
+    if (wasAnswered) {
+      updateData.status = "completed"; updateData.endedAt = new Date();
+      console.log(`[webhook] Call answered by human → completed`);
+    } else {
+      updateData.status = "no-answer"; updateData.endedAt = new Date();
+      console.log(`[webhook] Call ended but not answered by human (answered_by="${body.answered_by ?? "unknown"}") → no-answer`);
+    }
+  } else if (isFailed) { updateData.status = "failed"; updateData.endedAt = new Date(); }
   if (transcriptText) updateData.transcript = transcriptText;
   if (body.summary) updateData.summary = body.summary;
   if (body.call_length) updateData.durationSeconds = Math.round(body.call_length * 60);
   else if (body.duration) updateData.durationSeconds = Math.round(body.duration);
 
-  // ── Step 3: AI processing (only on completed calls) ─────────────────────────
+  // ── Step 3: AI processing (only on calls answered by a human) ───────────────
+  if (isCompleted && !wasAnswered) {
+    // Not answered — just write the no-answer status and exit
+    console.log(`[webhook] Call not answered — skipping AI processing and booking extraction`);
+    if (Object.keys(updateData).length > 0) {
+      await db.update(callsTable).set(updateData).where(eq(callsTable.id, callRecord.id));
+      console.log(`[webhook] ✓ no-answer status written for call id=${callRecord.id}`);
+    }
+    return;
+  }
+
   if (isCompleted) {
     // If BlandAI didn't include the transcript in the webhook, fetch it directly from their API
     if (!transcriptText) {
@@ -690,6 +722,7 @@ router.get("/calls/:id", adminAuth, async (req, res) => {
       if (blandRes.ok) {
         const data = (await blandRes.json()) as {
           status?: string;
+          answered_by?: string;
           transcript?: Array<{ user: string; text: string }> | string;
           summary?: string;
           call_length?: number;
@@ -697,7 +730,14 @@ router.get("/calls/:id", adminAuth, async (req, res) => {
 
         const updateData: Partial<typeof callsTable.$inferSelect> = {};
         const isCompleted = data.status === "completed" || data.status === "ended";
-        if (isCompleted) { updateData.status = "completed"; updateData.endedAt = new Date(); }
+        const wasAnswered = data.answered_by === "human";
+        if (isCompleted) {
+          if (wasAnswered) {
+            updateData.status = "completed"; updateData.endedAt = new Date();
+          } else {
+            updateData.status = "no-answer"; updateData.endedAt = new Date();
+          }
+        }
 
         let transcriptText: string | undefined;
         if (data.transcript) {
@@ -709,7 +749,7 @@ router.get("/calls/:id", adminAuth, async (req, res) => {
         if (data.call_length) updateData.durationSeconds = Math.round(data.call_length * 60);
         if (data.summary) updateData.summary = data.summary;
 
-        if (isCompleted && transcriptText && !call.keyInsights) {
+        if (isCompleted && wasAnswered && transcriptText && !call.keyInsights) {
           const aiResult = await generateAISummary(transcriptText, call.contactName, call.id);
           if (aiResult.summary) updateData.summary = aiResult.summary;
           if (aiResult.keyInsights.length > 0) updateData.keyInsights = JSON.stringify(aiResult.keyInsights);

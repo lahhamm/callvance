@@ -76,14 +76,15 @@ export async function computeSlots(clientId: number, dateStr: string, avail: Ava
     ),
   );
 
-  console.log(`[slots] Found ${existingBookings.length} existing booking(s) for ${dateStr}:`, existingBookings.map(b => b.scheduledAt.toISOString()));
+  console.log(`[slots] Found ${existingBookings.length} existing booking(s) for ${dateStr}:`, existingBookings.map(b => new Date(b.scheduledAt as unknown as string | Date).toISOString()));
 
   const slotMs = duration * 60 * 1000;
   const freeSlots = allSlots.filter(slot => {
     const sStart = slot.getTime();
     const sEnd = sStart + slotMs;
     const blockingBooking = existingBookings.find(b => {
-      const bStart = b.scheduledAt.getTime();
+      // Defensively convert: Drizzle may return a Date or a string depending on driver version
+      const bStart = new Date(b.scheduledAt as unknown as string | Date).getTime();
       const bEnd = bStart + slotMs;
       return sStart < bEnd && bStart < sEnd;
     });
