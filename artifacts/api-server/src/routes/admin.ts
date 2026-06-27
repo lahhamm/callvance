@@ -357,6 +357,7 @@ router.post("/admin/clients/:id/calls/initiate", async (req, res) => {
     phone_number: contact[0].phone, task, voice: config.voice,
     first_sentence: config.firstMessage, max_duration: config.maxDuration,
     record: true, answered_by_enabled: true,
+    interruption_threshold: 1000,
     metadata: { call_db_id: callRecord.id, contact_id: contactId, client_id: clientId },
   };
   if (webhookUrl) blandPayload.webhook = webhookUrl;
@@ -576,7 +577,8 @@ router.post("/admin/clients/:id/calls/bulk", async (req, res) => {
       const blandPayload: Record<string, unknown> = {
         phone_number: contact[0].phone, task: bulkTask, voice: config.voice,
         first_sentence: config.firstMessage, max_duration: config.maxDuration,
-        record: true, metadata: { call_db_id: callRecord.id, contact_id: contactId, client_id: clientId },
+        record: true, interruption_threshold: 150,
+        metadata: { call_db_id: callRecord.id, contact_id: contactId, client_id: clientId },
       };
       if (webhookUrl) blandPayload.webhook = webhookUrl;
       if (bulkBlandTools.length > 0) blandPayload.tools = bulkBlandTools;
@@ -797,6 +799,7 @@ Rules:
               phone_number: contactPhone, task: effectivePrompt, voice: config.voice,
               first_sentence: config.firstMessage, max_duration: config.maxDuration,
               record: true, answered_by_enabled: true,
+              interruption_threshold: 1000,
               metadata: { call_db_id: callRecord.id, contact_id: contactDbId, client_id: clientId },
             };
             if (webhookUrl) blandPayload.webhook = webhookUrl;

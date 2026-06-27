@@ -120,6 +120,7 @@ async function initiateCallForContact(contactId: number) {
     max_duration: config.maxDuration,
     record: true,
     answered_by_enabled: true,
+    interruption_threshold: 1000,
     metadata: { call_db_id: callRecord.id, contact_id: contact[0].id },
   };
   if (webhookUrl) blandPayload.webhook = webhookUrl;
