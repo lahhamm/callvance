@@ -295,7 +295,6 @@ export default function ClientPortal() {
                 <thead>
                   <tr className="border-b border-gray-100 bg-gray-50">
                     <th className="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Contact</th>
-                    <th className="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Phone</th>
                     <th className="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
                     <th className="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Score</th>
                     <th className="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
@@ -308,10 +307,9 @@ export default function ClientPortal() {
                     <tr key={c.id} className="hover:bg-gray-50 transition-colors">
                       <td className="px-5 py-3.5 font-medium text-gray-900">
                         {c.contactName
-                          ? c.contactName
-                          : <span className="text-gray-400 italic text-xs">Unknown</span>}
+                          ? <>{c.contactName}<span className="font-normal text-gray-400"> · {c.contactPhone}</span></>
+                          : c.contactPhone}
                       </td>
-                      <td className="px-5 py-3.5 font-mono text-xs text-gray-500">{c.contactPhone}</td>
                       <td className="px-5 py-3.5 text-gray-500 text-xs whitespace-nowrap">
                         <div>{new Date(c.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</div>
                         <div className="text-gray-400">{new Date(c.createdAt).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}</div>

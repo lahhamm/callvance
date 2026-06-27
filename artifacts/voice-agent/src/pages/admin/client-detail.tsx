@@ -309,7 +309,11 @@ function CallsTab({ clientId, calls, onTranscript, qc, toast }: { clientId: numb
             return (
               <div key={c.id} className="p-4 space-y-2 hover:bg-secondary/20 transition-colors">
                 <div className="flex items-center gap-2.5 flex-wrap">
-                  <span className="font-medium text-sm text-foreground">{c.contactName || c.contactPhone}</span>
+                  <span className="font-medium text-sm text-foreground">
+                    {c.contactName
+                      ? <>{c.contactName}<span className="font-normal text-muted-foreground"> · {c.contactPhone}</span></>
+                      : c.contactPhone}
+                  </span>
                   <Badge variant={c.status === "completed" ? "default" : c.status === "failed" ? "destructive" : "secondary"} className="text-xs">{c.status}</Badge>
                   <ScoreBadge score={c.leadScore} />
                   <span className="text-xs text-muted-foreground ml-auto">{new Date(c.createdAt).toLocaleString()}</span>

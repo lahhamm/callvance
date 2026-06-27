@@ -90,7 +90,11 @@ export default function GlobalCallsFeed() {
             return (
               <div key={c.id} className="p-4 space-y-2 hover:bg-secondary/20 transition-colors">
                 <div className="flex items-center gap-2.5 flex-wrap">
-                  <span className="font-medium text-sm text-foreground">{c.contactName || c.contactPhone}</span>
+                  <span className="font-medium text-sm text-foreground">
+                    {c.contactName
+                      ? <>{c.contactName}<span className="font-normal text-muted-foreground"> · {c.contactPhone}</span></>
+                      : c.contactPhone}
+                  </span>
                   {c.clientName && (
                     <span className="text-xs border border-border px-2 py-0.5 rounded-full text-muted-foreground">{c.clientName}</span>
                   )}
