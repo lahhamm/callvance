@@ -78,10 +78,9 @@ async function initiateCallForContact(contactId: number) {
       blandTools.push({
         name: "check_availability",
         description: "Check available appointment slots for a specific date. Always call this before offering or confirming any appointment time.",
-        url: `${serverUrl}/api/availability/${clientToken}/slots`,
+        url: `${serverUrl}/api/availability/${clientToken}/slots/{{date}}`,
         method: "GET",
         headers: {},
-        query: { date: "{{date}}" },
         response_data: [
           { name: "available_slots", data: "$.slots", context: "Available appointment times for the requested date" },
           { name: "timezone", data: "$.timezone", context: "Timezone for the slots" },
@@ -772,15 +771,17 @@ router.get("/calls/:id", adminAuth, async (req, res) => {
 // ── PUBLIC: GET /api/availability/:clientToken/slots?date=YYYY-MM-DD ─────────
 // No auth required — clientToken is an HMAC derived from clientId + SESSION_SECRET.
 // Called by BlandAI mid-conversation to check real-time available slots.
-router.get("/availability/:clientToken/slots", async (req, res) => {
+// Accept date as either a path segment (/slots/2026-06-30) or query string (/slots?date=2026-06-30)
+// BlandAI interpolates {{date}} in the URL path; query string is kept as a fallback for manual testing.
+router.get("/availability/:clientToken/slots/:date?", async (req, res) => {
   const { clientToken } = req.params;
-  const { date } = req.query as { date?: string };
+  const date = (req.params.date ?? (req.query as { date?: string }).date ?? "").trim();
 
-  console.log(`[availability] ── REQUEST ── token="${clientToken}" date="${date ?? "MISSING"}"`);
+  console.log(`[availability] ── REQUEST ── token="${clientToken}" date="${date || "MISSING"}"`);
 
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     console.log(`[availability] ✗ Bad date param: "${date}" — returning 400`);
-    res.status(400).json({ error: "date query param required (YYYY-MM-DD)", slots: [] });
+    res.status(400).json({ error: "date required as path segment (/slots/YYYY-MM-DD) or query string (?date=YYYY-MM-DD)", slots: [] });
     return;
   }
 

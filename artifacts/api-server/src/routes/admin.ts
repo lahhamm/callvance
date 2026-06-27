@@ -322,10 +322,9 @@ router.post("/admin/clients/:id/calls/initiate", async (req, res) => {
     initiateBlandTools.push({
       name: "check_availability",
       description: "Check available appointment slots for a specific date. Always call this before offering or confirming any appointment time.",
-      url: `${serverUrl}/api/availability/${clientToken}/slots`,
+      url: `${serverUrl}/api/availability/${clientToken}/slots/{{date}}`,
       method: "GET",
       headers: {},
-      query: { date: "{{date}}" },
       response_data: [
         { name: "available_slots", data: "$.slots", context: "Available appointment times for the requested date" },
         { name: "timezone", data: "$.timezone", context: "Timezone for the slots" },
@@ -545,10 +544,9 @@ router.post("/admin/clients/:id/calls/bulk", async (req, res) => {
         bulkBlandTools.push({
           name: "check_availability",
           description: "Check available appointment slots for a specific date. Always call this before offering or confirming any appointment time.",
-          url: `${bulkServerUrl}/api/availability/${clientToken}/slots`,
+          url: `${bulkServerUrl}/api/availability/${clientToken}/slots/{{date}}`,
           method: "GET",
           headers: {},
-          query: { date: "{{date}}" },
           response_data: [
             { name: "available_slots", data: "$.slots", context: "Available appointment times for the requested date" },
             { name: "timezone", data: "$.timezone", context: "Timezone for the slots" },
@@ -756,10 +754,9 @@ Rules:
               chatBlandTools.push({
                 name: "check_availability",
                 description: "Check available appointment slots for a specific date. Always call this before offering or confirming any appointment time.",
-                url: `${chatServerUrl}/api/availability/${clientToken}/slots`,
+                url: `${chatServerUrl}/api/availability/${clientToken}/slots/{{date}}`,
                 method: "GET",
                 headers: {},
-                query: { date: "{{date}}" },
                 response_data: [
                   { name: "available_slots", data: "$.slots", context: "Available appointment times for the requested date" },
                   { name: "timezone", data: "$.timezone", context: "Timezone for the slots" },
