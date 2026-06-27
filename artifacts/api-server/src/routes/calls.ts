@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { eq, desc, count, inArray } from "drizzle-orm";
+import { eq, desc, count, inArray, isNull, and, gte, lt } from "drizzle-orm";
 import { db, callsTable, contactsTable, agentConfigTable, bookingsTable, availabilityTable, clientsTable } from "@workspace/db";
 import Anthropic from "@anthropic-ai/sdk";
 import {
@@ -476,6 +476,90 @@ export async function syncInProgressCalls(): Promise<void> {
         }
       } catch (err) {
         console.error(`[poll] Failed to sync call id=${call.id}:`, err);
+      }
+    }
+    // ── Retry recently-completed calls that have no transcript yet ────────────
+    // BlandAI sometimes processes the transcript a few seconds after sending
+    // the webhook — the webhook handler marks the call "completed" immediately
+    // but finds no transcript, and the poller never re-checks it because it
+    // only watches in-progress/queued calls.  Here we also retry any call that
+    // completed within the last 15 minutes but still has no transcript.
+    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+    const recentlyCompletedNoTranscript = await db.select().from(callsTable)
+      .where(and(
+        eq(callsTable.status, "completed"),
+        isNull(callsTable.transcript),
+        gte(callsTable.endedAt, fifteenMinutesAgo),
+      ));
+
+    if (recentlyCompletedNoTranscript.length > 0) {
+      console.log(`[poll] ${recentlyCompletedNoTranscript.length} recently-completed call(s) still missing transcript — retrying`);
+    }
+
+    for (const call of recentlyCompletedNoTranscript) {
+      if (!call.blandCallId) {
+        console.log(`[poll][retry] Skipping call id=${call.id} — no blandCallId`);
+        continue;
+      }
+      console.log(`[poll][retry] Fetching transcript from BlandAI for completed call id=${call.id} blandCallId=${call.blandCallId}`);
+      try {
+        const blandRes = await fetch(`${BLAND_BASE_URL}/calls/${call.blandCallId}`, {
+          headers: { Authorization: BLAND_API_KEY! },
+        });
+        if (!blandRes.ok) {
+          console.log(`[poll][retry] BlandAI returned ${blandRes.status} for call id=${call.id} — skipping`);
+          continue;
+        }
+        const data = (await blandRes.json()) as {
+          transcript?: Array<{ user: string; text: string }> | string;
+          transcripts?: Array<{ user: string; text: string }>;
+          answered_by?: string;
+          call_length?: number;
+          duration?: number;
+          total_duration?: number;
+        };
+
+        const rawTranscript = data.transcript ?? data.transcripts;
+        if (!rawTranscript) {
+          console.log(`[poll][retry] Call id=${call.id} — BlandAI still has no transcript, will retry next cycle`);
+          continue;
+        }
+        const transcriptText = typeof rawTranscript === "string"
+          ? rawTranscript
+          : (rawTranscript as Array<{ user: string; text: string }>).filter(t => t.text?.trim()).map(t => `${t.user}: ${t.text}`).join("\n");
+        if (!transcriptText.trim()) {
+          console.log(`[poll][retry] Call id=${call.id} — transcript present but empty after normalization`);
+          continue;
+        }
+
+        console.log(`[poll][retry] Got transcript for call id=${call.id}: ${transcriptText.length} chars — running AI summary`);
+        const retryUpdate: Partial<typeof callsTable.$inferSelect> = { transcript: transcriptText };
+
+        const rawDuration = data.call_length ?? data.total_duration ?? data.duration;
+        if (rawDuration && !call.durationSeconds) {
+          retryUpdate.durationSeconds = data.call_length
+            ? Math.round(data.call_length * 60)
+            : Math.round(rawDuration);
+        }
+
+        const aiResult = await generateAISummary(transcriptText, call.contactName, call.id);
+        if (aiResult.summary) retryUpdate.summary = aiResult.summary;
+        if (aiResult.keyInsights.length > 0) retryUpdate.keyInsights = JSON.stringify(aiResult.keyInsights);
+        if (aiResult.leadScore) retryUpdate.leadScore = aiResult.leadScore;
+        console.log(`[poll][retry] AI result for call id=${call.id}: leadScore="${aiResult.leadScore}" summary="${aiResult.summary.slice(0, 80)}"`);
+
+        await db.update(callsTable).set(retryUpdate).where(eq(callsTable.id, call.id));
+        console.log(`[poll][retry] DB updated for call id=${call.id} — transcript + summary saved`);
+
+        const existingBooking = await db.select().from(bookingsTable).where(eq(bookingsTable.callId, call.id)).limit(1);
+        if (!existingBooking[0]) {
+          console.log(`[poll][retry] Attempting booking extraction for call id=${call.id}`);
+          await extractBookingFromTranscript(transcriptText, call.contactName ?? null, call.contactPhone, call.contactId ?? null, call.id, call.clientId ?? null);
+        } else {
+          console.log(`[poll][retry] Booking already exists for call id=${call.id} — skipping extraction`);
+        }
+      } catch (err) {
+        console.error(`[poll][retry] Failed to retry call id=${call.id}:`, err);
       }
     }
   } catch (err) {
