@@ -776,26 +776,34 @@ router.get("/availability/:clientToken/slots", async (req, res) => {
   const { clientToken } = req.params;
   const { date } = req.query as { date?: string };
 
+  console.log(`[availability] ── REQUEST ── token="${clientToken}" date="${date ?? "MISSING"}"`);
+
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    console.log(`[availability] ✗ Bad date param: "${date}" — returning 400`);
     res.status(400).json({ error: "date query param required (YYYY-MM-DD)", slots: [] });
     return;
   }
 
   // Find which client this token belongs to
   const allClients = await db.select().from(clientsTable);
+  console.log(`[availability] Matching token against ${allClients.length} client(s)`);
   const matched = allClients.find(c => getClientPublicToken(c.id) === clientToken);
   if (!matched) {
+    console.log(`[availability] ✗ No client matched token="${clientToken}" — returning 404`);
     res.status(404).json({ error: "Invalid token", slots: [] });
     return;
   }
+  console.log(`[availability] ✓ Matched clientId=${matched.id} name="${matched.name}"`);
 
   const availRows = await db.select().from(availabilityTable)
     .where(eq(availabilityTable.clientId, matched.id)).limit(1);
   const avail = availRows[0];
   if (!avail) {
+    console.log(`[availability] ✗ No availability row for clientId=${matched.id} — returning empty`);
     res.json({ date, timezone: "UTC", business_hours: null, slots: [] });
     return;
   }
+  console.log(`[availability] Avail row: timezone="${avail.timezone}" startTime="${avail.startTime}" endTime="${avail.endTime}" slotDuration=${avail.slotDurationMinutes}min preventOverlaps=${avail.preventOverlaps} availableDays="${avail.availableDays}"`);
 
   const slots = await computeSlots(matched.id, date, avail);
   const tz = avail.timezone;
@@ -803,7 +811,7 @@ router.get("/availability/:clientToken/slots", async (req, res) => {
     new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true }).format(s)
   );
 
-  console.log(`[availability] clientId=${matched.id} date=${date} tz=${tz} slots=${formatted.length}: ${formatted.join(", ")}`);
+  console.log(`[availability] ── RESPONSE ── clientId=${matched.id} date=${date} slots=${formatted.length}: [${formatted.join(", ")}]`);
 
   res.json({
     date,

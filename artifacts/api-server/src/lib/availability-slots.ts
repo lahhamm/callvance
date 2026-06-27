@@ -37,19 +37,34 @@ function localTimeToUtc(dateStr: string, timeStr: string, offsetMs: number): Dat
 }
 
 export async function computeSlots(clientId: number, dateStr: string, avail: AvailRow): Promise<Date[]> {
-  const availDays: number[] = JSON.parse(avail.availableDays);
+  let availDays: number[];
+  try {
+    availDays = JSON.parse(avail.availableDays);
+  } catch (e) {
+    console.error(`[slots] ✗ Failed to parse availableDays="${avail.availableDays}" for clientId=${clientId}:`, e);
+    return [];
+  }
   const tz = avail.timezone;
 
   const dow = getDayOfWeekInTz(dateStr, tz);
-  if (!availDays.includes(dow)) return [];
+  const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  console.log(`[slots] clientId=${clientId} date=${dateStr} tz=${tz} dow=${dow}(${DAY_NAMES[dow]}) availDays=${JSON.stringify(availDays)}(${availDays.map(d => DAY_NAMES[d]).join(",")})`);
+
+  if (!availDays.includes(dow)) {
+    console.log(`[slots] ✗ EARLY RETURN — ${DAY_NAMES[dow]} not in availableDays ${JSON.stringify(availDays)} → 0 slots`);
+    return [];
+  }
 
   const offsetMs = getOffsetMs(dateStr, tz);
+  console.log(`[slots] UTC offset for ${dateStr} in ${tz}: ${offsetMs / 3600000}h (${offsetMs}ms)`);
 
   const [startH, startM] = avail.startTime.split(":").map(Number);
   const [endH, endM] = avail.endTime.split(":").map(Number);
   const startMinutes = startH * 60 + startM;
   const endMinutes = endH * 60 + endM;
   const duration = avail.slotDurationMinutes;
+
+  console.log(`[slots] Business hours: ${avail.startTime}–${avail.endTime} (${startMinutes}–${endMinutes} min) slotDuration=${duration}min`);
 
   const allSlots: Date[] = [];
   for (let min = startMinutes; min + duration <= endMinutes; min += duration) {
@@ -58,14 +73,23 @@ export async function computeSlots(clientId: number, dateStr: string, avail: Ava
     allSlots.push(localTimeToUtc(dateStr, `${h}:${mn}`, offsetMs));
   }
 
-  console.log(`[slots] computeSlots clientId=${clientId} date=${dateStr} tz=${tz} preventOverlaps=${avail.preventOverlaps} allSlots=${allSlots.length} (${avail.startTime}–${avail.endTime})`);
+  console.log(`[slots] Generated ${allSlots.length} raw slots: ${allSlots.map(s => s.toISOString()).join(", ")}`);
 
-  if (!avail.preventOverlaps) return allSlots;
+  if (allSlots.length === 0) {
+    console.log(`[slots] ✗ EARLY RETURN — no slots generated (startMinutes=${startMinutes} endMinutes=${endMinutes} duration=${duration})`);
+    return [];
+  }
+
+  console.log(`[slots] preventOverlaps=${avail.preventOverlaps}`);
+  if (!avail.preventOverlaps) {
+    console.log(`[slots] preventOverlaps=false → returning all ${allSlots.length} slots without filtering`);
+    return allSlots;
+  }
 
   const dayStart = localTimeToUtc(dateStr, "00:00", offsetMs);
   const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
 
-  console.log(`[slots] Fetching bookings for clientId=${clientId} date=${dateStr} window=[${dayStart.toISOString()}, ${dayEnd.toISOString()})`);
+  console.log(`[slots] Querying bookings: clientId=${clientId} status=confirmed scheduledAt in [${dayStart.toISOString()}, ${dayEnd.toISOString()})`);
 
   const existingBookings = await db.select().from(bookingsTable).where(
     and(
@@ -76,28 +100,37 @@ export async function computeSlots(clientId: number, dateStr: string, avail: Ava
     ),
   );
 
-  console.log(`[slots] Found ${existingBookings.length} existing booking(s) for ${dateStr}:`, existingBookings.map(b => new Date(b.scheduledAt as unknown as string | Date).toISOString()));
+  console.log(`[slots] Raw bookings query returned ${existingBookings.length} row(s):`);
+  for (const b of existingBookings) {
+    const rawVal = b.scheduledAt;
+    const asDate = new Date(rawVal as unknown as string | Date);
+    console.log(`[slots]   booking id=${b.id} status="${b.status}" clientId=${b.clientId} scheduledAt raw="${rawVal}" typeof=${typeof rawVal} asDate=${asDate.toISOString()} isValidDate=${!isNaN(asDate.getTime())}`);
+  }
 
   const slotMs = duration * 60 * 1000;
   const freeSlots = allSlots.filter(slot => {
     const sStart = slot.getTime();
     const sEnd = sStart + slotMs;
     const blockingBooking = existingBookings.find(b => {
-      // Defensively convert: Drizzle may return a Date or a string depending on driver version
       const bStart = new Date(b.scheduledAt as unknown as string | Date).getTime();
       const bEnd = bStart + slotMs;
-      return sStart < bEnd && bStart < sEnd;
+      const overlaps = sStart < bEnd && bStart < sEnd;
+      if (overlaps) {
+        console.log(`[slots]   overlap check: slot [${slot.toISOString()}–${new Date(sEnd).toISOString()}] vs booking id=${b.id} [${new Date(bStart).toISOString()}–${new Date(bEnd).toISOString()}] → OVERLAPS`);
+      }
+      return overlaps;
     });
     const localTime = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true }).format(slot);
     if (blockingBooking) {
-      console.log(`[slots] BLOCKED: ${localTime} UTC=${slot.toISOString()} — conflicts with booking id=${blockingBooking.id} scheduledAt_utc=${blockingBooking.scheduledAt.toISOString()}`);
+      const bRaw = new Date(blockingBooking.scheduledAt as unknown as string | Date);
+      console.log(`[slots] BLOCKED: ${localTime} (${slot.toISOString()}) — booking id=${blockingBooking.id} at ${bRaw.toISOString()}`);
     } else {
-      console.log(`[slots] PASSED:  ${localTime} UTC=${slot.toISOString()}`);
+      console.log(`[slots] FREE:    ${localTime} (${slot.toISOString()})`);
     }
     return !blockingBooking;
   });
 
-  console.log(`[slots] Free slots after filtering: ${freeSlots.length}/${allSlots.length} for ${dateStr}`);
+  console.log(`[slots] ✓ Result: ${freeSlots.length} free / ${allSlots.length} total for ${dateStr}`);
   return freeSlots;
 }
 
