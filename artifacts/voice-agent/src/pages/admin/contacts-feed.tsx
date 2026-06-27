@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { authHeader } from "@/lib/auth";
+import { apiFetch } from "@/lib/api";
 import { ArrowLeft, Search, Phone, Mail, Building2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
@@ -9,10 +9,6 @@ type Contact = {
   id: number; clientId?: number; clientName?: string; name: string; phone: string;
   email?: string; company?: string; status: string; lastCalledAt?: string; createdAt: string;
 };
-
-function apiFetch(path: string) {
-  return fetch(`/api${path}`, { headers: { ...authHeader() } }).then(r => r.json());
-}
 
 const STATUS_COLORS: Record<string, string> = {
   new: "bg-blue-500/10 text-blue-400 border-blue-500/20",

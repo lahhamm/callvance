@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useParams } from "wouter";
-import { authHeader } from "@/lib/auth";
+import { apiFetch } from "@/lib/api";
 import {
   ArrowLeft, Copy, Check, Plus, Phone, Trash2, Zap,
   FileText, Clock, XCircle, Eye, EyeOff, KeyRound, RefreshCw, CalendarDays
@@ -38,9 +38,6 @@ const DAYS = [{ value: 0, label: "Sun" }, { value: 1, label: "Mon" }, { value: 2
 const TIMEZONES = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London", "Europe/Paris", "Asia/Tokyo", "Asia/Singapore", "Australia/Sydney"];
 const TABS = ["Contacts", "Agent Configuration", "Calls", "Bookings", "Schedule", "Access"] as const;
 
-function apiFetch(path: string, init?: RequestInit) {
-  return fetch(`/api${path}`, { ...init, headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers as Record<string, string> ?? {}) } }).then(r => { if (!r.ok) throw new Error("API error"); return r.json(); });
-}
 
 function parseInsights(raw?: string | null): string[] {
   if (!raw) return [];
@@ -163,6 +160,7 @@ function ContactsTab({ clientId, contacts, calls, qc, toast }: { clientId: numbe
   const callMutation = useMutation({
     mutationFn: (contactId: number) => apiFetch(`/admin/clients/${clientId}/calls/initiate`, { method: "POST", body: JSON.stringify({ contactId }) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin-calls", clientId] }); toast({ title: "Call initiated" }); },
+    onError: (err) => { toast({ title: "Call failed", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" }); },
   });
   const deleteMutation = useMutation({
     mutationFn: (contactId: number) => apiFetch(`/admin/clients/${clientId}/contacts/${contactId}`, { method: "DELETE" }),

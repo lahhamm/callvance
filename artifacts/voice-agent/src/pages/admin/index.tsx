@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { authHeader } from "@/lib/auth";
+import { apiFetch } from "@/lib/api";
 import { Plus, Users, Phone, Calendar, Activity, ExternalLink, Trash2, ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -16,11 +16,6 @@ type Client = {
   accessToken: string; createdAt: string; callCount: number; bookingCount: number; contactCount: number;
 };
 type Stats = { totalClients: number; activeClients: number; totalCalls: number; completedCalls: number };
-
-function apiFetch(path: string, init?: RequestInit) {
-  return fetch(`/api${path}`, { ...init, headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers as Record<string, string> ?? {}) } })
-    .then(r => { if (!r.ok) throw new Error("API error"); return r.json(); });
-}
 
 export default function AdminHome() {
   const [, navigate] = useLocation();

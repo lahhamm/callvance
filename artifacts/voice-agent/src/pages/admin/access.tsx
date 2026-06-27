@@ -1,20 +1,13 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Check, RefreshCw, Shield, ShieldOff, Link as LinkIcon, Users } from "lucide-react";
-import { authHeader } from "@/lib/auth";
+import { apiFetch } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
 type Client = {
   id: number; name: string; businessType: string; isActive: boolean;
   accessToken: string; portalPassword?: string | null;
 };
-
-function apiFetch(path: string, init?: RequestInit) {
-  return fetch(`/api${path}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers as Record<string, string> ?? {}) },
-  }).then(r => { if (!r.ok) throw new Error("API error"); return r.json(); });
-}
 
 function portalLink(token: string) {
   return `${window.location.origin}${import.meta.env.BASE_URL}link/${token}`.replace(/\/+/g, "/").replace(":/", "://");

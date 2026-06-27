@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { MessageSquare, X, Send, Phone, Loader2, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { authHeader } from "@/lib/auth";
+import { apiFetch } from "@/lib/api";
 
 interface Message {
   role: "user" | "assistant";
@@ -17,13 +17,6 @@ const SUGGESTIONS = [
   "Call +14155550101 and ask about their timeline",
   "Who was called most recently?",
 ];
-
-function apiFetch(path: string, init?: RequestInit) {
-  return fetch(`/api${path}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers as Record<string, string> ?? {}) },
-  }).then(r => r.json());
-}
 
 export function ChatBox() {
   const [open, setOpen] = useState(false);

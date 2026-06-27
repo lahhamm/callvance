@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { authHeader } from "@/lib/auth";
+import { apiFetch } from "@/lib/api";
 import { ArrowLeft, Clock, FileText, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -11,10 +11,6 @@ type Call = {
   contactPhone: string; status: string; summary?: string; keyInsights?: string;
   leadScore?: string; durationSeconds?: number; createdAt: string; transcript?: string;
 };
-
-function apiFetch(path: string) {
-  return fetch(`/api${path}`, { headers: { ...authHeader() } }).then(r => r.json());
-}
 
 function parseInsights(raw?: string | null): string[] {
   if (!raw) return [];

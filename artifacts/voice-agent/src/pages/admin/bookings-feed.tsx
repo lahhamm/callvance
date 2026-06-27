@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { authHeader } from "@/lib/auth";
+import { apiFetch } from "@/lib/api";
 import { ArrowLeft, Search, CalendarDays, Clock } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
@@ -36,10 +36,6 @@ function formatTimeInTz(iso: string, timezone?: string | null) {
 function getTzAbbr(iso: string, timezone?: string | null) {
   const tz = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   return new Date(iso).toLocaleTimeString("en-US", { timeZone: tz, timeZoneName: "short" }).split(" ").pop() ?? "";
-}
-
-function apiFetch(path: string) {
-  return fetch(`/api${path}`, { headers: { ...authHeader() } }).then(r => r.json());
 }
 
 export default function BookingsFeed() {
