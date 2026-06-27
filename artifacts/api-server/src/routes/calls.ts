@@ -171,13 +171,15 @@ async function extractBookingFromTranscript(
 ): Promise<void> {
   console.log(`[booking] Extracting booking from transcript for callId=${callId} contactName="${contactName}" clientId=${clientId}`);
 
-  // Fetch availability row first — need timezone for Claude prompt and notification email for after
+  // Fetch availability row first — need timezone, slot duration, and notification email
   let clientTimezone = "UTC";
+  let slotDurationMinutes = 60;
   let notificationEmail: string | null = null;
   if (clientId) {
     const availRows = await db.select().from(availabilityTable).where(eq(availabilityTable.clientId, clientId)).limit(1);
     if (availRows[0]) {
       clientTimezone = availRows[0].timezone;
+      slotDurationMinutes = availRows[0].slotDurationMinutes ?? 60;
       notificationEmail = availRows[0].notificationEmail ?? null;
     }
   }
@@ -190,14 +192,20 @@ async function extractBookingFromTranscript(
       max_tokens: 512,
       messages: [{
         role: "user",
-        content: `Analyze this phone call transcript. Did the caller and lead CONFIRM a specific appointment, meeting, or callback time?
+        content: `Analyze this phone call transcript and extract any confirmed appointment.
 
-The client's timezone is ${clientTimezone}. Today's date in that timezone is ${today}.
+Rules:
+- Return a scheduledAt value if the agent and lead AGREED on a specific date AND time (both must be present).
+- A confirmation phrase like "I'll book you for...", "we're all set for...", "your appointment is...", "I've scheduled you for..." counts as confirmed.
+- The client's timezone is ${clientTimezone}. Today's date in that timezone is ${today}.
+- Return the time as ISO 8601 WITH timezone offset (e.g. "2026-06-30T10:00:00-04:00"). NEVER use Z suffix.
+- If only a day name is mentioned (e.g. "Monday"), use the nearest upcoming ${today} occurrence.
+- If the appointment was NOT confirmed (e.g. agent said fully booked, or call ended before confirming), return null.
 
-If yes, extract the scheduled date/time and return it as an ISO 8601 string WITH the UTC offset for ${clientTimezone} (for example, if the time is 10:00 AM PDT, return "2026-06-26T10:00:00-07:00"). Do NOT return times in UTC (do not use the Z suffix). Use the nearest upcoming occurrence if only a day of week is mentioned.
-If no appointment was confirmed, return null.
-
-Respond ONLY with valid JSON: {"scheduledAt": "2026-06-26T10:00:00-07:00", "notes": "short note"} or {"scheduledAt": null}
+Respond ONLY with valid JSON — no explanation, no markdown:
+{"scheduledAt": "2026-06-30T10:00:00-04:00", "notes": "roofing inspection"}
+or
+{"scheduledAt": null}
 
 TRANSCRIPT:
 ${transcript.slice(0, 3000)}`,
@@ -219,6 +227,25 @@ ${transcript.slice(0, 3000)}`,
       return;
     }
     console.log(`[booking] WRITING TO DB: scheduledAt_utc="${scheduledAt.toISOString()}" local_in_${clientTimezone}="${scheduledAt.toLocaleString("en-US", { timeZone: clientTimezone })}"`);
+
+    // Double-booking guard: reject if another confirmed booking occupies this slot
+    if (clientId) {
+      const slotMs = slotDurationMinutes * 60 * 1000;
+      const slotEnd = new Date(scheduledAt.getTime() + slotMs);
+      const conflicts = await db.select().from(bookingsTable).where(
+        and(
+          eq(bookingsTable.clientId, clientId),
+          eq(bookingsTable.status, "confirmed"),
+          gte(bookingsTable.scheduledAt, scheduledAt),
+          lt(bookingsTable.scheduledAt, slotEnd),
+        ),
+      );
+      if (conflicts.length > 0) {
+        console.log(`[booking] ✗ DOUBLE-BOOKING BLOCKED: slot ${scheduledAt.toISOString()} already taken by booking id=${conflicts[0].id} — skipping insert`);
+        return;
+      }
+      console.log(`[booking] No conflict for slot ${scheduledAt.toISOString()} — proceeding with insert`);
+    }
 
     const inserted = await db.insert(bookingsTable).values({
       clientId: clientId ?? undefined,
