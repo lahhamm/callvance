@@ -8,7 +8,6 @@ import LoginPage from "@/pages/login";
 import AdminHome from "@/pages/admin/index";
 import ClientDetail from "@/pages/admin/client-detail";
 import GlobalCallsFeed from "@/pages/admin/calls-feed";
-import ContactsFeed from "@/pages/admin/contacts-feed";
 import BookingsFeed from "@/pages/admin/bookings-feed";
 import AccessPage from "@/pages/admin/access";
 import ClientPortal from "@/pages/client-portal";
@@ -41,7 +40,6 @@ function AdminSection() {
         <Switch>
           <Route path="/admin" component={AdminHome} />
           <Route path="/admin/calls" component={GlobalCallsFeed} />
-          <Route path="/admin/contacts" component={ContactsFeed} />
           <Route path="/admin/bookings" component={BookingsFeed} />
           <Route path="/admin/access" component={AccessPage} />
           <Route path="/admin/clients/:id" component={ClientDetail} />
@@ -79,7 +77,6 @@ export default function App() {
             <Route path="/portal" component={PortalSection} />
             <Route path="/admin">{() => <AdminSection />}</Route>
             <Route path="/admin/calls">{() => <AdminSection />}</Route>
-            <Route path="/admin/contacts">{() => <AdminSection />}</Route>
             <Route path="/admin/bookings">{() => <AdminSection />}</Route>
             <Route path="/admin/access">{() => <AdminSection />}</Route>
             <Route path="/admin/clients/:id">{() => <AdminSection />}</Route>
