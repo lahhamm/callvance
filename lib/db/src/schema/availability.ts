@@ -5,6 +5,7 @@ export const availabilityTable = pgTable("availability_settings", {
   clientId: integer("client_id"),
   timezone: text("timezone").notNull().default("America/New_York"),
   notificationEmail: text("notification_email"),
+  notificationPhone: text("notification_phone"),
   availableDays: text("available_days").notNull().default("[1,2,3,4,5]"),
   startTime: text("start_time").notNull().default("09:00"),
   endTime: text("end_time").notNull().default("17:00"),

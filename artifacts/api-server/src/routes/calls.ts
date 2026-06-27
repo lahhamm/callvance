@@ -6,8 +6,8 @@ import {
   InitiateCallBody,
   GetCallParams,
 } from "@workspace/api-zod";
-import { sendBookingEmail } from "./bookings";
 import { adminAuth } from "../middlewares/admin-auth";
+import { sendBookingNotifications } from "../lib/notifications";
 import { computeSlots, getNextAvailableDays, formatSlotsForPrompt, REQUIRED_FIELDS_DIRECTIVE, getClientPublicToken, formatBusinessHoursForPrompt } from "../lib/availability-slots";
 
 const router = Router();
@@ -177,16 +177,18 @@ async function extractBookingFromTranscript(
 ): Promise<void> {
   console.log(`[booking] Extracting booking from transcript for callId=${callId} contactName="${contactName}" clientId=${clientId}`);
 
-  // Fetch availability row first — need timezone, slot duration, and notification email
+  // Fetch availability row — need timezone, slot duration, and notification contacts
   let clientTimezone = "UTC";
   let slotDurationMinutes = 60;
   let notificationEmail: string | null = null;
+  let notificationPhone: string | null = null;
   if (clientId) {
     const availRows = await db.select().from(availabilityTable).where(eq(availabilityTable.clientId, clientId)).limit(1);
     if (availRows[0]) {
       clientTimezone = availRows[0].timezone;
       slotDurationMinutes = availRows[0].slotDurationMinutes ?? 60;
       notificationEmail = availRows[0].notificationEmail ?? null;
+      notificationPhone = (availRows[0] as any).notificationPhone ?? null;
     }
   }
 
@@ -267,11 +269,24 @@ ${transcript.slice(0, 3000)}`,
     const booking = inserted[0];
     console.log(`[booking] Booking created id=${booking.id} scheduledAt_utc=${scheduledAt.toISOString()} local=${scheduledAt.toLocaleString("en-US", { timeZone: clientTimezone })} clientId=${clientId}`);
 
-    if (notificationEmail) {
-      console.log(`[booking] Sending notification email to ${notificationEmail}`);
-      await sendBookingEmail(booking, notificationEmail);
+    // Fetch call's AI-generated lead score and summary for richer notifications
+    let leadScore: string | null = null;
+    let summary: string | null = null;
+    if (callId) {
+      const callRows = await db.select({ leadScore: callsTable.leadScore, summary: callsTable.summary })
+        .from(callsTable).where(eq(callsTable.id, callId)).limit(1);
+      if (callRows[0]) { leadScore = callRows[0].leadScore ?? null; summary = callRows[0].summary ?? null; }
+    }
+
+    if (notificationEmail || notificationPhone) {
+      console.log(`[booking] Sending notifications — email=${notificationEmail ?? "none"} sms=${notificationPhone ?? "none"}`);
+      await sendBookingNotifications(
+        { contactName, contactPhone, scheduledAt, timezone: clientTimezone, leadScore, summary, notes: parsed.notes ?? null },
+        notificationEmail,
+        notificationPhone,
+      );
     } else if (clientId) {
-      console.log(`[booking] No notification email configured for clientId=${clientId}`);
+      console.log(`[booking] No notification email or phone configured for clientId=${clientId}`);
     }
 
     console.log(`[booking] Auto-created booking for ${contactName ?? contactPhone} at ${scheduledAt.toISOString()}`);

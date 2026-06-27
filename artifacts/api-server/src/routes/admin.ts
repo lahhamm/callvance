@@ -185,12 +185,13 @@ router.get("/admin/clients/:id/availability", async (req, res) => {
 router.put("/admin/clients/:id/availability", async (req, res) => {
   const clientId = Number(req.params.id);
   await ensureClientAvailability(clientId);
-  const { timezone, notificationEmail, availableDays, startTime, endTime, slotDurationMinutes, preventOverlaps } = req.body as {
-    timezone?: string; notificationEmail?: string | null; availableDays?: number[]; startTime?: string; endTime?: string; slotDurationMinutes?: number; preventOverlaps?: boolean;
+  const { timezone, notificationEmail, notificationPhone, availableDays, startTime, endTime, slotDurationMinutes, preventOverlaps } = req.body as {
+    timezone?: string; notificationEmail?: string | null; notificationPhone?: string | null; availableDays?: number[]; startTime?: string; endTime?: string; slotDurationMinutes?: number; preventOverlaps?: boolean;
   };
   const updated = await db.update(availabilityTable).set({
     ...(timezone && { timezone }),
     ...(notificationEmail !== undefined && { notificationEmail }),
+    ...(notificationPhone !== undefined && { notificationPhone }),
     ...(availableDays && { availableDays: JSON.stringify(availableDays) }),
     ...(startTime && { startTime }),
     ...(endTime && { endTime }),

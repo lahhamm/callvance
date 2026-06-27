@@ -31,7 +31,7 @@ function formatInTz(iso: string, timezone?: string | null) {
   return `${time} ${abbr}`;
 }
 type AgentConfig = { id: number; agentName: string; voice: string; prompt: string; firstMessage: string; maxDuration: number; qualificationCriteria?: string };
-type Availability = { id: number; timezone: string; notificationEmail?: string; availableDays: number[]; startTime: string; endTime: string; slotDurationMinutes: number; preventOverlaps: boolean };
+type Availability = { id: number; timezone: string; notificationEmail?: string; notificationPhone?: string; availableDays: number[]; startTime: string; endTime: string; slotDurationMinutes: number; preventOverlaps: boolean };
 
 const VOICES = ["maya", "ryan", "adriana", "tina", "matt", "evelyn"];
 const DAYS = [{ value: 0, label: "Sun" }, { value: 1, label: "Mon" }, { value: 2, label: "Tue" }, { value: 3, label: "Wed" }, { value: 4, label: "Thu" }, { value: 5, label: "Fri" }, { value: 6, label: "Sat" }];
@@ -363,9 +363,10 @@ function AvailabilityTab({ clientId, avail, qc, toast }: { clientId: number; ava
   const [end, setEnd] = useState(avail.endTime);
   const [slot, setSlot] = useState(avail.slotDurationMinutes);
   const [email, setEmail] = useState(avail.notificationEmail ?? "");
+  const [phone, setPhone] = useState(avail.notificationPhone ?? "");
   const [preventOverlaps, setPreventOverlaps] = useState(avail.preventOverlaps);
   const mutation = useMutation({
-    mutationFn: () => apiFetch(`/admin/clients/${clientId}/availability`, { method: "PUT", body: JSON.stringify({ timezone: tz, notificationEmail: email || null, availableDays: selectedDays, startTime: start, endTime: end, slotDurationMinutes: slot, preventOverlaps }) }),
+    mutationFn: () => apiFetch(`/admin/clients/${clientId}/availability`, { method: "PUT", body: JSON.stringify({ timezone: tz, notificationEmail: email || null, notificationPhone: phone || null, availableDays: selectedDays, startTime: start, endTime: end, slotDurationMinutes: slot, preventOverlaps }) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin-avail", clientId] }); toast({ title: "Availability saved" }); },
   });
   const toggle = (d: number) => setSelectedDays(p => p.includes(d) ? p.filter(x => x !== d) : [...p, d].sort());
@@ -385,6 +386,7 @@ function AvailabilityTab({ clientId, avail, qc, toast }: { clientId: number; ava
         </div>
       </div>
       <div className="space-y-1.5"><Label className="text-sm font-medium">Notification email</Label><Input type="email" value={email} onChange={e => setEmail(e.target.value)} className="bg-background border-border" placeholder="you@company.com" /></div>
+      <div className="space-y-1.5"><Label className="text-sm font-medium">Notification SMS</Label><Input type="tel" value={phone} onChange={e => setPhone(e.target.value)} className="bg-background border-border" placeholder="+14155552671" /></div>
       <div className="flex items-center justify-between rounded-lg border border-border px-4 py-3">
         <div>
           <p className="text-sm font-medium">Prevent appointment overlaps</p>
