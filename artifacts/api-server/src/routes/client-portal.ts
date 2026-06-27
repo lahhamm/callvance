@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { eq, and, gte, desc } from "drizzle-orm";
-import { db, clientsTable, callsTable, bookingsTable, availabilityTable } from "@workspace/db";
+import { db, clientsTable, callsTable, bookingsTable, availabilityTable, contactsTable } from "@workspace/db";
 import { computeSlots } from "../lib/availability-slots";
 
 const router = Router();
@@ -28,7 +28,18 @@ router.get("/client/:token", async (req, res) => {
 router.get("/client/:token/calls", async (req, res) => {
   const client = await resolveClient(req.params.token);
   if (!client) { res.status(403).json({ error: "Access revoked or invalid link" }); return; }
-  const calls = await db.select().from(callsTable).where(eq(callsTable.clientId, client.id)).orderBy(desc(callsTable.createdAt));
+  const rows = await db
+    .select()
+    .from(callsTable)
+    .leftJoin(contactsTable, eq(callsTable.contactId, contactsTable.id))
+    .where(eq(callsTable.clientId, client.id))
+    .orderBy(desc(callsTable.createdAt));
+  // Prefer the name stored on the call record; fall back to the contacts table;
+  // fall back to phone number so the portal always shows something human-readable.
+  const calls = rows.map((row: any) => ({
+    ...row.calls,
+    contactName: row.calls.contactName?.trim() || row.contacts?.name?.trim() || row.calls.contactPhone,
+  }));
   res.json(calls.map(serializeCall));
 });
 

@@ -122,7 +122,13 @@ async function initiateCallForContact(contactId: number) {
     record: true,
     answered_by_enabled: true,
     interruption_threshold: 1000,
-    metadata: { call_db_id: callRecord.id, contact_id: contact[0].id },
+    metadata: {
+      call_db_id: callRecord.id,
+      contact_id: contact[0].id,
+      contact_name: contact[0].name ?? undefined,
+      client_id: clientId ?? undefined,
+      client_token: clientId ? getClientPublicToken(clientId) : undefined,
+    },
   };
   if (webhookUrl) blandPayload.webhook = webhookUrl;
   if (blandTools.length > 0) blandPayload.tools = blandTools;
@@ -644,7 +650,7 @@ router.post("/calls/webhook", async (req, res) => {
     summary?: string;
     duration?: number;
     call_length?: number;
-    metadata?: { call_db_id?: number; contact_id?: number; client_id?: number };
+    metadata?: { call_db_id?: number; contact_id?: number; client_id?: number; contact_name?: string; client_token?: string };
   };
 
   console.log(`[webhook] ===== INCOMING WEBHOOK =====`);
@@ -700,6 +706,27 @@ router.post("/calls/webhook", async (req, res) => {
     return;
   }
   console.log(`[webhook] ✓ Call record found: db id=${callRecord.id} clientId=${callRecord.clientId} contactId=${callRecord.contactId} currentStatus="${callRecord.status}"`);
+
+  // ── Backfill contact name from metadata if missing ─────────────────────────
+  // The initiation path now includes contact_name in BlandAI metadata so it
+  // survives the round-trip even if the call record somehow lost it.
+  const metaContactName = body.metadata?.contact_name?.trim() || null;
+  if (metaContactName) {
+    // Ensure the call record has the name
+    if (!callRecord.contactName) {
+      await db.update(callsTable).set({ contactName: metaContactName }).where(eq(callsTable.id, callRecord.id));
+      callRecord = { ...callRecord, contactName: metaContactName };
+      console.log(`[webhook] Backfilled contactName="${metaContactName}" on call id=${callRecord.id} from metadata`);
+    }
+    // Ensure the contacts table has the name (in case it was blank at creation)
+    if (callRecord.contactId) {
+      const existingContact = await db.select().from(contactsTable).where(eq(contactsTable.id, callRecord.contactId)).limit(1);
+      if (existingContact[0] && !existingContact[0].name?.trim()) {
+        await db.update(contactsTable).set({ name: metaContactName }).where(eq(contactsTable.id, callRecord.contactId));
+        console.log(`[webhook] Backfilled contacts.name="${metaContactName}" for contact id=${callRecord.contactId} from metadata`);
+      }
+    }
+  }
 
   // ── Step 2: Determine new status ────────────────────────────────────────────
   const isCompleted = body.status === "completed" || body.status === "ended";

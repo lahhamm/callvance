@@ -359,7 +359,13 @@ router.post("/admin/clients/:id/calls/initiate", async (req, res) => {
     first_sentence: config.firstMessage, max_duration: config.maxDuration,
     record: true, answered_by_enabled: true,
     interruption_threshold: 1000,
-    metadata: { call_db_id: callRecord.id, contact_id: contactId, client_id: clientId },
+    metadata: {
+      call_db_id: callRecord.id,
+      contact_id: contactId,
+      client_id: clientId,
+      contact_name: contact[0].name ?? undefined,
+      client_token: getClientPublicToken(clientId),
+    },
   };
   if (webhookUrl) blandPayload.webhook = webhookUrl;
   if (initiateBlandTools.length > 0) blandPayload.tools = initiateBlandTools;
@@ -580,7 +586,13 @@ router.post("/admin/clients/:id/calls/bulk", async (req, res) => {
         phone_number: contact[0].phone, task: bulkTask, voice: config.voice,
         first_sentence: config.firstMessage, max_duration: config.maxDuration,
         record: true, interruption_threshold: 150,
-        metadata: { call_db_id: callRecord.id, contact_id: contactId, client_id: clientId },
+        metadata: {
+          call_db_id: callRecord.id,
+          contact_id: contactId,
+          client_id: clientId,
+          contact_name: contact[0].name ?? undefined,
+          client_token: getClientPublicToken(clientId),
+        },
       };
       if (webhookUrl) blandPayload.webhook = webhookUrl;
       if (bulkBlandTools.length > 0) blandPayload.tools = bulkBlandTools;
@@ -803,7 +815,13 @@ Rules:
               first_sentence: config.firstMessage, max_duration: config.maxDuration,
               record: true, answered_by_enabled: true,
               interruption_threshold: 1000,
-              metadata: { call_db_id: callRecord.id, contact_id: contactDbId, client_id: clientId },
+              metadata: {
+                call_db_id: callRecord.id,
+                contact_id: contactDbId,
+                client_id: clientId,
+                contact_name: contactName ?? undefined,
+                client_token: getClientPublicToken(clientId),
+              },
             };
             if (webhookUrl) blandPayload.webhook = webhookUrl;
             if (chatBlandTools.length > 0) blandPayload.tools = chatBlandTools;
