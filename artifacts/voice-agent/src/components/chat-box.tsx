@@ -35,11 +35,18 @@ export function ChatBox() {
   const inputRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
 
-  const { data: clients = [] } = useQuery<Client[]>({
-    queryKey: ["admin-clients-light"],
+  const { data: clients = [], refetch: refetchClients } = useQuery<Client[]>({
+    queryKey: ["admin-clients"],
     queryFn: () => apiFetch("/admin/clients"),
     select: (data) => data.map((c: { id: number; name: string }) => ({ id: c.id, name: c.name })),
+    staleTime: 0,
   });
+
+  // Refetch the client list every time the panel is opened so newly created
+  // clients appear immediately without requiring a page reload
+  useEffect(() => {
+    if (open) refetchClients();
+  }, [open]);
 
   // Auto-select first client when list loads
   useEffect(() => {

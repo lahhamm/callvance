@@ -77,17 +77,28 @@ async function sendBookingEmail(booking: {
   }
 }
 
+async function buildTzMap() {
+  const availRows = await db.select().from(availabilityTable);
+  return new Map(availRows.map(a => [a.clientId, a.timezone]));
+}
+
 router.get("/bookings", async (_req, res) => {
-  const bookings = await db.select().from(bookingsTable).orderBy(desc(bookingsTable.scheduledAt));
-  res.json(bookings.map(serializeBooking));
+  const [bookings, tzMap] = await Promise.all([
+    db.select().from(bookingsTable).orderBy(desc(bookingsTable.scheduledAt)),
+    buildTzMap(),
+  ]);
+  res.json(bookings.map(b => ({ ...serializeBooking(b), timezone: b.clientId ? (tzMap.get(b.clientId) ?? null) : null })));
 });
 
 router.get("/bookings/upcoming", async (_req, res) => {
   const now = new Date();
-  const bookings = await db.select().from(bookingsTable)
-    .where(and(gte(bookingsTable.scheduledAt, now), eq(bookingsTable.status, "confirmed")))
-    .orderBy(bookingsTable.scheduledAt);
-  res.json(bookings.map(serializeBooking));
+  const [bookings, tzMap] = await Promise.all([
+    db.select().from(bookingsTable)
+      .where(and(gte(bookingsTable.scheduledAt, now), eq(bookingsTable.status, "confirmed")))
+      .orderBy(bookingsTable.scheduledAt),
+    buildTzMap(),
+  ]);
+  res.json(bookings.map(b => ({ ...serializeBooking(b), timezone: b.clientId ? (tzMap.get(b.clientId) ?? null) : null })));
 });
 
 router.post("/bookings", async (req, res) => {

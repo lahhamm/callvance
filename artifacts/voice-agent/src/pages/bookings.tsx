@@ -19,17 +19,19 @@ type Booking = {
   status: string;
   notes?: string | null;
   createdAt: string;
+  timezone?: string | null;
 };
 
-function formatDateTime(iso: string) {
-  return new Date(iso).toLocaleString("en-US", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
+function formatDateTime(iso: string, timezone?: string | null) {
+  const tz = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const datePart = new Date(iso).toLocaleDateString("en-US", {
+    timeZone: tz, weekday: "short", month: "short", day: "numeric", year: "numeric",
   });
+  const timePart = new Date(iso).toLocaleTimeString("en-US", {
+    timeZone: tz, hour: "2-digit", minute: "2-digit",
+  });
+  const tzAbbr = new Date(iso).toLocaleTimeString("en-US", { timeZone: tz, timeZoneName: "short" }).split(" ").pop() ?? "";
+  return `${datePart}, ${timePart} ${tzAbbr}`;
 }
 
 function isUpcoming(iso: string) {
@@ -261,7 +263,7 @@ function BookingRow({
         </div>
         <div className="flex items-center gap-1.5 text-sm font-medium text-primary">
           <Calendar className="w-3.5 h-3.5" />
-          {formatDateTime(booking.scheduledAt)}
+          {formatDateTime(booking.scheduledAt, booking.timezone)}
         </div>
         {booking.notes && (
           <p className="text-xs text-muted-foreground leading-relaxed">{booking.notes}</p>

@@ -10,7 +10,7 @@ const router: IRouter = Router();
 router.use(healthRouter);
 router.use(authRouter);
 router.use(clientPortalRouter);
+router.use(callsRouter);   // before adminRouter so public routes (webhook, availability) aren't blocked by global adminAuth
 router.use(adminRouter);
-router.use(callsRouter);
 
 export default router;

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { eq, desc, count, inArray } from "drizzle-orm";
-import { db, callsTable, contactsTable, agentConfigTable, bookingsTable, availabilityTable } from "@workspace/db";
+import { db, callsTable, contactsTable, agentConfigTable, bookingsTable, availabilityTable, clientsTable } from "@workspace/db";
 import Anthropic from "@anthropic-ai/sdk";
 import {
   InitiateCallBody,
@@ -8,7 +8,7 @@ import {
 } from "@workspace/api-zod";
 import { sendBookingEmail } from "./bookings";
 import { adminAuth } from "../middlewares/admin-auth";
-import { computeSlots, getNextAvailableDays, formatSlotsForPrompt } from "../lib/availability-slots";
+import { computeSlots, getNextAvailableDays, formatSlotsForPrompt, REQUIRED_FIELDS_DIRECTIVE, getClientPublicToken, formatBusinessHoursForPrompt } from "../lib/availability-slots";
 
 const router = Router();
 const BLAND_API_KEY = process.env.BLAND_AI_API_KEY;
@@ -56,37 +56,61 @@ async function initiateCallForContact(contactId: number) {
   const callRecord = inserted[0];
   console.log(`[initiate] Created call record id=${callRecord.id}`);
 
-  const replitDomain = process.env.REPLIT_DEV_DOMAIN;
-  const webhookUrl = replitDomain ? `https://${replitDomain}/api/calls/webhook` : null;
-  console.log(`[initiate] REPLIT_DEV_DOMAIN="${replitDomain ?? "NOT SET"}" webhookUrl="${webhookUrl ?? "NONE — webhook will NOT be sent"}"`);
+  const serverUrl = process.env.SERVER_URL;
+  const webhookUrl = serverUrl ? `${serverUrl}/api/calls/webhook` : null;
+  console.log(`[initiate] SERVER_URL="${serverUrl ?? "NOT SET"}" webhookUrl="${webhookUrl ?? "NONE — poller will sync instead"}"`);
 
   let task = config.qualificationCriteria?.trim()
     ? `${config.prompt}\n\nQualification Criteria:\n${config.qualificationCriteria}`
     : config.prompt;
   console.log(`[initiate] Base task built, length=${task.length} chars`);
 
-  // Inject available slots if preventOverlaps is enabled
+  // Add availability tool calling + business hours context
+  const blandTools: unknown[] = [];
   if (clientId) {
     const availRows = await db.select().from(availabilityTable).where(eq(availabilityTable.clientId, clientId)).limit(1);
     const avail = availRows[0];
-    console.log(`[initiate] Availability row found=${!!avail} preventOverlaps=${avail?.preventOverlaps}`);
-    if (avail && avail.preventOverlaps) {
+    console.log(`[initiate] Availability row found=${!!avail} preventOverlaps=${avail?.preventOverlaps} timezone=${avail?.timezone}`);
+    if (avail && serverUrl) {
+      const clientToken = getClientPublicToken(clientId);
+      const hoursLine = formatBusinessHoursForPrompt(avail);
+      task = `${task}\n\n${hoursLine}\n\nBefore offering or confirming any appointment time, you MUST call the check_availability tool with the requested date in YYYY-MM-DD format to get real-time available slots. Never confirm a time without first checking availability.`;
+      blandTools.push({
+        name: "check_availability",
+        description: "Check available appointment slots for a specific date. Always call this before offering or confirming any appointment time.",
+        url: `${serverUrl}/api/availability/${clientToken}/slots`,
+        method: "GET",
+        headers: {},
+        query: { date: "{{date}}" },
+        response_data: [
+          { name: "available_slots", data: "$.slots", context: "Available appointment times for the requested date" },
+          { name: "timezone", data: "$.timezone", context: "Timezone for the slots" },
+          { name: "business_hours", data: "$.business_hours", context: "Business operating hours" },
+        ],
+        input_schema: {
+          speech: "Let me check available times for that date.",
+          type: "object",
+          properties: {
+            date: { type: "string", description: "Date in YYYY-MM-DD format (e.g. 2026-06-27)" },
+          },
+          required: ["date"],
+        },
+      });
+      console.log(`[initiate] BlandAI tool 'check_availability' registered at ${serverUrl}/api/availability/${clientToken}/slots`);
+    } else if (avail && !serverUrl) {
+      // Fallback: static injection when SERVER_URL not set (tool calling requires public URL)
       const nextDays = getNextAvailableDays(5, avail);
-      console.log(`[initiate] Next ${nextDays.length} available days: ${nextDays.join(", ")}`);
       const allSlots: Date[] = [];
       for (const day of nextDays) { allSlots.push(...await computeSlots(clientId, day, avail)); }
-      console.log(`[initiate] Total free slots computed: ${allSlots.length}`);
-      const slotsText = formatSlotsForPrompt(allSlots, avail.timezone);
-      if (slotsText) {
-        task = `${task}\n\n${slotsText}`;
-        console.log(`[initiate] Slots appended to task. New task length=${task.length} chars`);
-      } else {
-        console.log(`[initiate] No slots available — slotsText is empty, task unchanged`);
-      }
+      const slotsText = formatSlotsForPrompt(allSlots, avail.timezone, avail);
+      if (slotsText) { task = `${task}\n\n${slotsText}`; }
+      console.log(`[initiate] SERVER_URL not set — using static slot injection (${allSlots.length} slots)`);
     }
   } else {
-    console.log(`[initiate] No clientId on contact — skipping availability slot injection`);
+    console.log(`[initiate] No clientId on contact — skipping availability`);
   }
+
+  task = `${task}\n\n${REQUIRED_FIELDS_DIRECTIVE}`;
 
   const blandPayload: Record<string, unknown> = {
     phone_number: contact[0].phone,
@@ -99,6 +123,7 @@ async function initiateCallForContact(contactId: number) {
     metadata: { call_db_id: callRecord.id, contact_id: contact[0].id },
   };
   if (webhookUrl) blandPayload.webhook = webhookUrl;
+  if (blandTools.length > 0) blandPayload.tools = blandTools;
 
   console.log(`[initiate] Sending to BlandAI — phone="${contact[0].phone}" voice="${config.voice}" max_duration=${config.maxDuration} webhook="${blandPayload.webhook ?? "NONE"}"`);
   console.log(`[initiate] Full task being sent to BlandAI:\n---\n${task}\n---`);
@@ -143,7 +168,21 @@ async function extractBookingFromTranscript(
   clientId: number | null,
 ): Promise<void> {
   console.log(`[booking] Extracting booking from transcript for callId=${callId} contactName="${contactName}" clientId=${clientId}`);
+
+  // Fetch availability row first — need timezone for Claude prompt and notification email for after
+  let clientTimezone = "UTC";
+  let notificationEmail: string | null = null;
+  if (clientId) {
+    const availRows = await db.select().from(availabilityTable).where(eq(availabilityTable.clientId, clientId)).limit(1);
+    if (availRows[0]) {
+      clientTimezone = availRows[0].timezone;
+      notificationEmail = availRows[0].notificationEmail ?? null;
+    }
+  }
+
+  console.log(`[booking] → Calling Claude (haiku) for booking extraction. transcriptLength=${transcript.length} timezone=${clientTimezone} preview="${transcript.slice(0, 200).replace(/\n/g, " ")}"`);
   try {
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: clientTimezone });
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5",
       max_tokens: 512,
@@ -151,10 +190,12 @@ async function extractBookingFromTranscript(
         role: "user",
         content: `Analyze this phone call transcript. Did the caller and lead CONFIRM a specific appointment, meeting, or callback time?
 
-If yes, extract the scheduled date/time as an ISO 8601 string (assume today is ${new Date().toISOString().slice(0, 10)} if only a day is mentioned, or the nearest upcoming occurrence of that day).
+The client's timezone is ${clientTimezone}. Today's date in that timezone is ${today}.
+
+If yes, extract the scheduled date/time and return it as an ISO 8601 string WITH the UTC offset for ${clientTimezone} (for example, if the time is 10:00 AM PDT, return "2026-06-26T10:00:00-07:00"). Do NOT return times in UTC (do not use the Z suffix). Use the nearest upcoming occurrence if only a day of week is mentioned.
 If no appointment was confirmed, return null.
 
-Respond ONLY with valid JSON: {"scheduledAt": "2025-01-15T14:00:00.000Z", "notes": "short note"} or {"scheduledAt": null}
+Respond ONLY with valid JSON: {"scheduledAt": "2026-06-26T10:00:00-07:00", "notes": "short note"} or {"scheduledAt": null}
 
 TRANSCRIPT:
 ${transcript.slice(0, 3000)}`,
@@ -163,16 +204,19 @@ ${transcript.slice(0, 3000)}`,
 
     const text = response.content.find(b => b.type === "text");
     if (!text || text.type !== "text") { console.log(`[booking] Claude returned no text block for callId=${callId}`); return; }
-    console.log(`[booking] Claude raw booking response for callId=${callId}: ${text.text.slice(0, 200)}`);
+    console.log(`[booking] Claude raw response text for callId=${callId}: "${text.text.slice(0, 400)}"`);
 
     const parsed = parseClaudeJSON<{ scheduledAt: string | null; notes?: string }>(text.text);
+    console.log(`[booking] Claude parsed scheduledAt string: "${parsed.scheduledAt ?? "null"}"`);
     if (!parsed.scheduledAt) { console.log(`[booking] No appointment confirmed in transcript for callId=${callId}`); return; }
 
     const scheduledAt = new Date(parsed.scheduledAt);
+    console.log(`[booking] new Date("${parsed.scheduledAt}") → UTC="${scheduledAt.toISOString()}" isNaN=${isNaN(scheduledAt.getTime())}`);
     if (isNaN(scheduledAt.getTime()) || scheduledAt < new Date()) {
-      console.log(`[booking] scheduledAt invalid or in the past: "${parsed.scheduledAt}" — skipping`);
+      console.log(`[booking] scheduledAt invalid or in the past — skipping`);
       return;
     }
+    console.log(`[booking] WRITING TO DB: scheduledAt_utc="${scheduledAt.toISOString()}" local_in_${clientTimezone}="${scheduledAt.toLocaleString("en-US", { timeZone: clientTimezone })}"`);
 
     const inserted = await db.insert(bookingsTable).values({
       clientId: clientId ?? undefined,
@@ -186,17 +230,13 @@ ${transcript.slice(0, 3000)}`,
     }).returning();
 
     const booking = inserted[0];
-    console.log(`[booking] Booking created id=${booking.id} scheduledAt=${scheduledAt.toISOString()} clientId=${clientId}`);
+    console.log(`[booking] Booking created id=${booking.id} scheduledAt_utc=${scheduledAt.toISOString()} local=${scheduledAt.toLocaleString("en-US", { timeZone: clientTimezone })} clientId=${clientId}`);
 
-    // Look up notification email filtered by this client
-    if (clientId) {
-      const availRows = await db.select().from(availabilityTable).where(eq(availabilityTable.clientId, clientId)).limit(1);
-      if (availRows[0]?.notificationEmail) {
-        console.log(`[booking] Sending notification email to ${availRows[0].notificationEmail}`);
-        await sendBookingEmail(booking, availRows[0].notificationEmail);
-      } else {
-        console.log(`[booking] No notification email configured for clientId=${clientId}`);
-      }
+    if (notificationEmail) {
+      console.log(`[booking] Sending notification email to ${notificationEmail}`);
+      await sendBookingEmail(booking, notificationEmail);
+    } else if (clientId) {
+      console.log(`[booking] No notification email configured for clientId=${clientId}`);
     }
 
     console.log(`[booking] Auto-created booking for ${contactName ?? contactPhone} at ${scheduledAt.toISOString()}`);
@@ -207,6 +247,7 @@ ${transcript.slice(0, 3000)}`,
 
 async function generateAISummary(transcript: string, contactName: string | null, callId?: number): Promise<{ summary: string; keyInsights: string[]; leadScore: string }> {
   console.log(`[ai] generateAISummary called callId=${callId ?? "?"} transcriptLength=${transcript.length} contactName="${contactName}"`);
+  console.log(`[ai] → Calling Claude (haiku) for summary. transcriptSlice="${transcript.slice(0, 200).replace(/\n/g, " ")}"`);
   try {
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5",
@@ -277,10 +318,16 @@ export async function syncInProgressCalls(): Promise<void> {
         const data = (await blandRes.json()) as {
           status?: string;
           transcript?: Array<{ user: string; text: string }> | string;
+          transcripts?: Array<{ user: string; text: string }>;
           summary?: string;
           call_length?: number;
+          duration?: number;
+          total_duration?: number;
         };
-        console.log(`[poll] BlandAI status="${data.status}" call_length=${data.call_length ?? "?"} has_transcript=${!!data.transcript} for call id=${call.id}`);
+
+        // BlandAI uses call_length (in minutes) on the GET endpoint; log whichever fields are present
+        const rawDuration = data.call_length ?? data.total_duration ?? data.duration;
+        console.log(`[poll] BlandAI status="${data.status}" call_length=${data.call_length ?? "?"} duration=${data.duration ?? "?"} total_duration=${data.total_duration ?? "?"} has_transcript=${!!(data.transcript ?? data.transcripts)} for call id=${call.id}`);
 
         const isCompleted = data.status === "completed" || data.status === "ended";
         const isFailed = data.status === "failed" || data.status === "error" || data.status === "no-answer";
@@ -293,17 +340,74 @@ export async function syncInProgressCalls(): Promise<void> {
         if (isCompleted) { updateData.status = "completed"; updateData.endedAt = new Date(); }
         else if (isFailed) { updateData.status = "failed"; updateData.endedAt = new Date(); }
 
-        let transcriptText: string | undefined;
-        if (data.transcript) {
-          transcriptText = typeof data.transcript === "string"
-            ? data.transcript
-            : data.transcript.map(t => `${t.user}: ${t.text}`).join("\n");
-          updateData.transcript = transcriptText;
-          console.log(`[poll] Transcript extracted for call id=${call.id}: ${transcriptText.length} chars`);
-        } else {
-          console.log(`[poll] No transcript in BlandAI response for call id=${call.id}`);
+        // call_length is in minutes on BlandAI's GET endpoint; duration/total_duration may be in seconds
+        if (rawDuration) {
+          updateData.durationSeconds = data.call_length
+            ? Math.round(data.call_length * 60)
+            : Math.round(rawDuration);
+          console.log(`[poll] Duration for call id=${call.id}: rawDuration=${rawDuration} → durationSeconds=${updateData.durationSeconds}`);
         }
-        if (data.call_length) updateData.durationSeconds = Math.round(data.call_length * 60);
+
+        // Normalize whichever transcript field BlandAI returned
+        const rawTranscript = data.transcript ?? data.transcripts;
+        let transcriptText: string | undefined;
+        if (rawTranscript) {
+          transcriptText = typeof rawTranscript === "string"
+            ? rawTranscript
+            : rawTranscript.filter(t => t.text?.trim()).map(t => `${t.user}: ${t.text}`).join("\n");
+          if (!transcriptText.trim()) transcriptText = undefined;
+          if (transcriptText) {
+            updateData.transcript = transcriptText;
+            console.log(`[poll] Transcript extracted for call id=${call.id}: ${transcriptText.length} chars`);
+          }
+        }
+
+        // If the call completed but no transcript came back, fetch the full call details
+        // separately — BlandAI sometimes omits transcript from status responses
+        if (isCompleted && !transcriptText && call.blandCallId) {
+          console.log(`[poll] Call id=${call.id} completed but no transcript in poll response — fetching full details from BlandAI`);
+          try {
+            const detailRes = await fetch(`${BLAND_BASE_URL}/calls/${call.blandCallId}`, {
+              headers: { Authorization: BLAND_API_KEY },
+            });
+            if (detailRes.ok) {
+              const detail = (await detailRes.json()) as {
+                transcript?: Array<{ user: string; text: string }> | string;
+                transcripts?: Array<{ user: string; text: string }>;
+                call_length?: number;
+                duration?: number;
+                total_duration?: number;
+              };
+              const detailRaw = detail.transcript ?? detail.transcripts;
+              if (detailRaw) {
+                const detailText = typeof detailRaw === "string"
+                  ? detailRaw
+                  : (detailRaw as Array<{ user: string; text: string }>).filter(t => t.text?.trim()).map(t => `${t.user}: ${t.text}`).join("\n");
+                if (detailText.trim()) {
+                  transcriptText = detailText;
+                  updateData.transcript = transcriptText;
+                  console.log(`[poll] Follow-up fetch got transcript for call id=${call.id}: ${transcriptText.length} chars`);
+                }
+              }
+              // Also grab duration if we didn't get it from the first response
+              if (!updateData.durationSeconds) {
+                const detailDuration = detail.call_length ?? detail.total_duration ?? detail.duration;
+                if (detailDuration) {
+                  updateData.durationSeconds = detail.call_length
+                    ? Math.round(detail.call_length * 60)
+                    : Math.round(detailDuration);
+                }
+              }
+              if (!transcriptText) {
+                console.log(`[poll] Follow-up fetch also returned no transcript for call id=${call.id} — will complete without summary`);
+              }
+            } else {
+              console.log(`[poll] Follow-up fetch returned ${detailRes.status} for call id=${call.id}`);
+            }
+          } catch (err) {
+            console.error(`[poll] Follow-up fetch failed for call id=${call.id}:`, err);
+          }
+        }
 
         if (isCompleted && transcriptText) {
           console.log(`[poll] Running AI summary for call id=${call.id}`);
@@ -313,10 +417,10 @@ export async function syncInProgressCalls(): Promise<void> {
           if (aiResult.leadScore) updateData.leadScore = aiResult.leadScore;
           console.log(`[poll] AI result for call id=${call.id}: leadScore="${aiResult.leadScore}" summary="${aiResult.summary.slice(0, 80)}"`);
         } else if (isCompleted && !transcriptText) {
-          console.log(`[poll] Call id=${call.id} completed but no transcript — skipping AI summary`);
+          console.log(`[poll] Call id=${call.id} completed with no transcript after follow-up — marking complete with no summary`);
         }
 
-        console.log(`[poll] Writing DB update for call id=${call.id}: status=${updateData.status} hasTranscript=${!!updateData.transcript} hasSummary=${!!updateData.summary} leadScore=${updateData.leadScore ?? "none"}`);
+        console.log(`[poll] Writing DB update for call id=${call.id}: status=${updateData.status} hasTranscript=${!!updateData.transcript} hasSummary=${!!updateData.summary} leadScore=${updateData.leadScore ?? "none"} durationSeconds=${updateData.durationSeconds ?? "none"}`);
         await db.update(callsTable).set(updateData).where(eq(callsTable.id, call.id));
         console.log(`[poll] DB update done for call id=${call.id} → status=${updateData.status}`);
 
@@ -399,7 +503,8 @@ router.post("/calls/webhook", async (req, res) => {
   const body = req.body as {
     call_id?: string;
     status?: string;
-    transcript?: string;
+    // BlandAI sends transcript as either a plain string or an array of turn objects
+    transcript?: string | Array<{ user: string; text: string }>;
     summary?: string;
     duration?: number;
     call_length?: number;
@@ -407,7 +512,29 @@ router.post("/calls/webhook", async (req, res) => {
   };
 
   console.log(`[webhook] ===== INCOMING WEBHOOK =====`);
-  console.log(`[webhook] call_id="${body.call_id}" status="${body.status}" has_transcript=${!!body.transcript} transcript_length=${body.transcript?.length ?? 0} call_length=${body.call_length ?? body.duration ?? "?"} metadata=${JSON.stringify(body.metadata)}`);
+  console.log(`[webhook] RAW BODY KEYS: ${Object.keys(body).join(", ")}`);
+  console.log(`[webhook] call_id="${body.call_id}" status="${body.status}" call_length=${body.call_length ?? body.duration ?? "?"} metadata=${JSON.stringify(body.metadata)}`);
+
+  // Log the raw transcript before touching it so we can see exactly what BlandAI sent
+  if (body.transcript === undefined || body.transcript === null) {
+    console.log(`[webhook] RAW transcript: MISSING (undefined/null) — no transcript in webhook payload`);
+  } else if (typeof body.transcript === "string") {
+    console.log(`[webhook] RAW transcript: STRING length=${body.transcript.length} preview="${body.transcript.slice(0, 300)}"`);
+  } else if (Array.isArray(body.transcript)) {
+    console.log(`[webhook] RAW transcript: ARRAY turns=${body.transcript.length} first_turn=${JSON.stringify(body.transcript[0] ?? null)}`);
+  } else {
+    console.log(`[webhook] RAW transcript: UNEXPECTED TYPE=${typeof body.transcript} value=${JSON.stringify(body.transcript).slice(0, 200)}`);
+  }
+
+  // Normalize transcript to a plain string immediately — BlandAI sends it either way
+  let transcriptText: string | undefined;
+  if (body.transcript) {
+    transcriptText = typeof body.transcript === "string"
+      ? body.transcript
+      : body.transcript.filter(t => t.text?.trim()).map(t => `${t.user}: ${t.text}`).join("\n");
+    if (!transcriptText.trim()) transcriptText = undefined;
+  }
+  console.log(`[webhook] NORMALIZED transcript: ${transcriptText ? `${transcriptText.length} chars` : "EMPTY/UNDEFINED after normalization"}`);
 
   // Acknowledge BlandAI immediately
   res.json({ ok: true });
@@ -446,45 +573,93 @@ router.post("/calls/webhook", async (req, res) => {
   const updateData: Partial<typeof callsTable.$inferSelect> = {};
   if (isCompleted) { updateData.status = "completed"; updateData.endedAt = new Date(); }
   else if (isFailed) { updateData.status = "failed"; updateData.endedAt = new Date(); }
-  if (body.transcript) updateData.transcript = body.transcript;
+  if (transcriptText) updateData.transcript = transcriptText;
   if (body.summary) updateData.summary = body.summary;
   if (body.call_length) updateData.durationSeconds = Math.round(body.call_length * 60);
   else if (body.duration) updateData.durationSeconds = Math.round(body.duration);
 
-  // ── Step 3: AI processing (only on completed calls with transcript) ──────────
-  if (isCompleted && body.transcript) {
-    console.log(`[webhook] Transcript received (${body.transcript.length} chars). Running AI summary...`);
-
-    let contactName = callRecord.contactName;
-    if (!contactName && callRecord.contactId) {
-      const contact = await db.select().from(contactsTable).where(eq(contactsTable.id, callRecord.contactId)).limit(1);
-      if (contact[0]) { contactName = contact[0].name; updateData.contactName = contactName; }
+  // ── Step 3: AI processing (only on completed calls) ─────────────────────────
+  if (isCompleted) {
+    // If BlandAI didn't include the transcript in the webhook, fetch it directly from their API
+    if (!transcriptText) {
+      const blandId = body.call_id ?? callRecord.blandCallId;
+      console.log(`[webhook] No transcript in webhook payload — fetching from BlandAI API for blandCallId="${blandId}"`);
+      if (blandId && BLAND_API_KEY) {
+        try {
+          const fetchRes = await fetch(`${BLAND_BASE_URL}/calls/${blandId}`, {
+            headers: { Authorization: BLAND_API_KEY },
+          });
+          if (fetchRes.ok) {
+            const fetchData = (await fetchRes.json()) as {
+              transcript?: string | Array<{ user: string; text: string }>;
+              call_length?: number;
+            };
+            if (fetchData.transcript) {
+              transcriptText = typeof fetchData.transcript === "string"
+                ? fetchData.transcript
+                : (fetchData.transcript as Array<{ user: string; text: string }>)
+                    .filter(t => t.text?.trim())
+                    .map(t => `${t.user}: ${t.text}`)
+                    .join("\n");
+              if (!transcriptText.trim()) transcriptText = undefined;
+              if (transcriptText) {
+                updateData.transcript = transcriptText;
+                console.log(`[webhook] Fetched transcript from BlandAI: ${transcriptText.length} chars`);
+              }
+            }
+            if (fetchData.call_length && !updateData.durationSeconds) {
+              updateData.durationSeconds = Math.round(fetchData.call_length * 60);
+            }
+          } else {
+            console.log(`[webhook] BlandAI API returned ${fetchRes.status} when fetching transcript for blandCallId="${blandId}"`);
+          }
+        } catch (err) {
+          console.error(`[webhook] Failed to fetch transcript from BlandAI for blandCallId="${blandId}":`, err);
+        }
+      } else {
+        console.log(`[webhook] Cannot fetch transcript — blandId="${blandId}" BLAND_API_KEY=${!!BLAND_API_KEY}`);
+      }
     }
-    if (!contactName && callRecord.contactPhone) {
-      const contact = await db.select().from(contactsTable).where(eq(contactsTable.phone, callRecord.contactPhone)).limit(1);
-      if (contact[0]) { contactName = contact[0].name; updateData.contactName = contactName; }
-    }
-    console.log(`[webhook] contactName resolved to: "${contactName ?? "unknown"}"`);
 
-    const aiResult = await generateAISummary(body.transcript, contactName, callRecord.id);
-    if (aiResult.summary) updateData.summary = aiResult.summary;
-    if (aiResult.keyInsights.length > 0) updateData.keyInsights = JSON.stringify(aiResult.keyInsights);
-    if (aiResult.leadScore) updateData.leadScore = aiResult.leadScore;
+    if (transcriptText) {
+      console.log(`[webhook] Transcript available (${transcriptText.length} chars). Running AI summary...`);
+
+      let contactName = callRecord.contactName;
+      if (!contactName && callRecord.contactId) {
+        const contact = await db.select().from(contactsTable).where(eq(contactsTable.id, callRecord.contactId)).limit(1);
+        if (contact[0]) { contactName = contact[0].name; updateData.contactName = contactName; }
+      }
+      if (!contactName && callRecord.contactPhone) {
+        const contact = await db.select().from(contactsTable).where(eq(contactsTable.phone, callRecord.contactPhone)).limit(1);
+        if (contact[0]) { contactName = contact[0].name; updateData.contactName = contactName; }
+      }
+      console.log(`[webhook] contactName resolved to: "${contactName ?? "unknown"}"`);
+
+      const aiResult = await generateAISummary(transcriptText, contactName, callRecord.id);
+      if (aiResult.summary) updateData.summary = aiResult.summary;
+      if (aiResult.keyInsights.length > 0) updateData.keyInsights = JSON.stringify(aiResult.keyInsights);
+      if (aiResult.leadScore) updateData.leadScore = aiResult.leadScore;
+      console.log(`[webhook] AI result: leadScore="${aiResult.leadScore}" summary="${aiResult.summary.slice(0, 80)}"`);
+    } else {
+      console.log(`[webhook] No transcript available for call id=${callRecord.id} — skipping AI summary`);
+    }
 
     console.log(`[webhook] Writing to DB: id=${callRecord.id} fields=${Object.keys(updateData).join(", ")}`);
     const dbResult = await db.update(callsTable).set(updateData).where(eq(callsTable.id, callRecord.id)).returning();
-    console.log(`[webhook] ✓ DB write complete for call id=${callRecord.id} — status="${dbResult[0]?.status}" leadScore="${dbResult[0]?.leadScore}" hasSummary=${!!dbResult[0]?.summary}`);
+    console.log(`[webhook] ✓ DB write complete for call id=${callRecord.id} — status="${dbResult[0]?.status}" leadScore="${dbResult[0]?.leadScore}" hasSummary=${!!dbResult[0]?.summary} hasTranscript=${!!dbResult[0]?.transcript}`);
 
-    const existingBooking = await db.select().from(bookingsTable).where(eq(bookingsTable.callId, callRecord.id)).limit(1);
-    if (!existingBooking[0]) {
-      await extractBookingFromTranscript(body.transcript, contactName ?? null, callRecord.contactPhone, callRecord.contactId ?? null, callRecord.id, callRecord.clientId ?? null);
-    } else {
-      console.log(`[webhook] Booking already exists for call id=${callRecord.id} — skipping extraction`);
+    if (transcriptText) {
+      const existingBooking = await db.select().from(bookingsTable).where(eq(bookingsTable.callId, callRecord.id)).limit(1);
+      if (!existingBooking[0]) {
+        await extractBookingFromTranscript(transcriptText, callRecord.contactName ?? null, callRecord.contactPhone, callRecord.contactId ?? null, callRecord.id, callRecord.clientId ?? null);
+      } else {
+        console.log(`[webhook] Booking already exists for call id=${callRecord.id} — skipping extraction`);
+      }
     }
     return;
   }
 
-  if (!isCompleted && !isFailed) {
+  if (!isFailed) {
     console.log(`[webhook] Status "${body.status}" is not terminal — saving intermediate update only`);
   }
 
@@ -551,6 +726,50 @@ router.get("/calls/:id", adminAuth, async (req, res) => {
   }
 
   res.json(serializeCall(call));
+});
+
+// ── PUBLIC: GET /api/availability/:clientToken/slots?date=YYYY-MM-DD ─────────
+// No auth required — clientToken is an HMAC derived from clientId + SESSION_SECRET.
+// Called by BlandAI mid-conversation to check real-time available slots.
+router.get("/availability/:clientToken/slots", async (req, res) => {
+  const { clientToken } = req.params;
+  const { date } = req.query as { date?: string };
+
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    res.status(400).json({ error: "date query param required (YYYY-MM-DD)", slots: [] });
+    return;
+  }
+
+  // Find which client this token belongs to
+  const allClients = await db.select().from(clientsTable);
+  const matched = allClients.find(c => getClientPublicToken(c.id) === clientToken);
+  if (!matched) {
+    res.status(404).json({ error: "Invalid token", slots: [] });
+    return;
+  }
+
+  const availRows = await db.select().from(availabilityTable)
+    .where(eq(availabilityTable.clientId, matched.id)).limit(1);
+  const avail = availRows[0];
+  if (!avail) {
+    res.json({ date, timezone: "UTC", business_hours: null, slots: [] });
+    return;
+  }
+
+  const slots = await computeSlots(matched.id, date, avail);
+  const tz = avail.timezone;
+  const formatted = slots.map(s =>
+    new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true }).format(s)
+  );
+
+  console.log(`[availability] clientId=${matched.id} date=${date} tz=${tz} slots=${formatted.length}: ${formatted.join(", ")}`);
+
+  res.json({
+    date,
+    timezone: tz,
+    business_hours: `${avail.startTime} to ${avail.endTime}`,
+    slots: formatted,
+  });
 });
 
 export default router;

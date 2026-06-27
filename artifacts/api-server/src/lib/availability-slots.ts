@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { db, bookingsTable } from "@workspace/db";
 import { and, eq, gte, lt } from "drizzle-orm";
 
@@ -57,10 +58,14 @@ export async function computeSlots(clientId: number, dateStr: string, avail: Ava
     allSlots.push(localTimeToUtc(dateStr, `${h}:${mn}`, offsetMs));
   }
 
+  console.log(`[slots] computeSlots clientId=${clientId} date=${dateStr} tz=${tz} preventOverlaps=${avail.preventOverlaps} allSlots=${allSlots.length} (${avail.startTime}–${avail.endTime})`);
+
   if (!avail.preventOverlaps) return allSlots;
 
   const dayStart = localTimeToUtc(dateStr, "00:00", offsetMs);
   const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+
+  console.log(`[slots] Fetching bookings for clientId=${clientId} date=${dateStr} window=[${dayStart.toISOString()}, ${dayEnd.toISOString()})`);
 
   const existingBookings = await db.select().from(bookingsTable).where(
     and(
@@ -71,16 +76,28 @@ export async function computeSlots(clientId: number, dateStr: string, avail: Ava
     ),
   );
 
+  console.log(`[slots] Found ${existingBookings.length} existing booking(s) for ${dateStr}:`, existingBookings.map(b => b.scheduledAt.toISOString()));
+
   const slotMs = duration * 60 * 1000;
-  return allSlots.filter(slot => {
+  const freeSlots = allSlots.filter(slot => {
     const sStart = slot.getTime();
     const sEnd = sStart + slotMs;
-    return !existingBookings.some(b => {
+    const blockingBooking = existingBookings.find(b => {
       const bStart = b.scheduledAt.getTime();
       const bEnd = bStart + slotMs;
       return sStart < bEnd && bStart < sEnd;
     });
+    const localTime = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true }).format(slot);
+    if (blockingBooking) {
+      console.log(`[slots] BLOCKED: ${localTime} UTC=${slot.toISOString()} — conflicts with booking id=${blockingBooking.id} scheduledAt_utc=${blockingBooking.scheduledAt.toISOString()}`);
+    } else {
+      console.log(`[slots] PASSED:  ${localTime} UTC=${slot.toISOString()}`);
+    }
+    return !blockingBooking;
   });
+
+  console.log(`[slots] Free slots after filtering: ${freeSlots.length}/${allSlots.length} for ${dateStr}`);
+  return freeSlots;
 }
 
 export function getNextAvailableDays(n: number, avail: AvailRow): string[] {
@@ -99,7 +116,29 @@ export function getNextAvailableDays(n: number, avail: AvailRow): string[] {
   return results;
 }
 
-export function formatSlotsForPrompt(slots: Date[], tz: string): string {
+export function getClientPublicToken(clientId: number): string {
+  const secret = process.env.SESSION_SECRET ?? "callvance-default-secret";
+  return crypto.createHmac("sha256", secret).update(clientId.toString()).digest("hex").slice(0, 32);
+}
+
+export function formatBusinessHoursForPrompt(avail: AvailRow): string {
+  return `Business hours: ${formatTime12h(avail.startTime)} to ${formatTime12h(avail.endTime)} ${avail.timezone}`;
+}
+
+export const REQUIRED_FIELDS_DIRECTIVE = `Before confirming any appointment you must collect:
+1. Full property address (street, city, state)
+2. Preferred date and time (only offer available slots)
+3. Confirm the lead's phone number or best contact number
+Do not confirm the appointment until all three are collected.`;
+
+function formatTime12h(timeStr: string): string {
+  const [h, m] = timeStr.split(":").map(Number);
+  const period = h >= 12 ? "PM" : "AM";
+  const hour = h % 12 === 0 ? 12 : h % 12;
+  return m === 0 ? `${hour} ${period}` : `${hour}:${String(m).padStart(2, "0")} ${period}`;
+}
+
+export function formatSlotsForPrompt(slots: Date[], tz: string, avail?: { startTime: string; endTime: string }): string {
   if (slots.length === 0) return "";
 
   const grouped = new Map<string, Date[]>();
@@ -115,8 +154,16 @@ export function formatSlotsForPrompt(slots: Date[], tz: string): string {
     const times = daySlots
       .map(s => new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true }).format(s))
       .join(", ");
-    return `${dateLabel}: ${times}`;
+    return `Available slots on ${dateLabel}: ${times}`;
   });
 
-  return "Available appointment slots (only offer these exact times, do not suggest any other times):\n" + lines.join("\n");
+  const hoursLine = avail
+    ? `Business hours: ${formatTime12h(avail.startTime)} to ${formatTime12h(avail.endTime)} ${tz}`
+    : `Timezone: ${tz}`;
+
+  return [
+    hoursLine,
+    ...lines,
+    "Do not offer or confirm any time outside of these slots.",
+  ].join("\n");
 }

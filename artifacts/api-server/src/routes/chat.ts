@@ -2,6 +2,7 @@ import { Router } from "express";
 import Anthropic from "@anthropic-ai/sdk";
 import { eq, desc } from "drizzle-orm";
 import { db, contactsTable, callsTable, agentConfigTable } from "@workspace/db";
+import { REQUIRED_FIELDS_DIRECTIVE } from "../lib/availability-slots";
 
 const router = Router();
 
@@ -159,11 +160,12 @@ Rules:
             }
           }
 
-          // Build prompt — merge custom_topic into the agent's base prompt
+          // Build prompt — merge custom_topic into the agent's base prompt, then always append required fields directive
           const basePrompt = effectiveConfig?.prompt ?? "You are a helpful AI assistant.";
-          const effectivePrompt = input.custom_topic
+          const withTopic = input.custom_topic
             ? `${basePrompt}\n\nIMPORTANT — Special instructions for this specific call: ${input.custom_topic}`
             : basePrompt;
+          const effectivePrompt = `${withTopic}\n\n${REQUIRED_FIELDS_DIRECTIVE}`;
 
           // Insert call record with clientId so it appears in the client portal
           const inserted = await db
@@ -178,10 +180,8 @@ Rules:
             .returning();
           const callRecord = inserted[0];
 
-          const replitDomain = process.env.REPLIT_DEV_DOMAIN;
-          const webhookUrl = replitDomain
-            ? `https://${replitDomain}/api/calls/webhook`
-            : null;
+          const serverUrl = process.env.SERVER_URL;
+          const webhookUrl = serverUrl ? `${serverUrl}/api/calls/webhook` : null;
 
           const blandPayload: Record<string, unknown> = {
             phone_number: contactPhone,

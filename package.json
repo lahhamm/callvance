@@ -2,15 +2,30 @@
   "name": "workspace",
   "version": "0.0.0",
   "license": "MIT",
+  "workspaces": [
+    "artifacts/*",
+    "lib/*",
+    "scripts"
+  ],
   "scripts": {
-    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
-    "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "dev": "concurrently -n api,web -c cyan,magenta \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:api": "npm run dev -w @workspace/api-server",
+    "dev:web": "npm run dev -w @workspace/voice-agent",
+    "build": "npm run build -w @workspace/api-server && npm run build -w @workspace/voice-agent",
+    "db:push": "npm run push -w @workspace/db",
     "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
+    "typecheck": "npm run typecheck:libs && npm run typecheck -w @workspace/api-server && npm run typecheck -w @workspace/voice-agent"
   },
   "private": true,
   "devDependencies": {
+    "concurrently": "^9.1.2",
     "prettier": "^3.8.4",
     "typescript": "~5.9.3"
+  },
+  "allowScripts": {
+    "esbuild@0.18.20": true,
+    "esbuild@0.28.1": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.27.3": true
   }
 }

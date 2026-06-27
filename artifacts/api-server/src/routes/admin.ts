@@ -7,7 +7,7 @@ import {
 } from "@workspace/db";
 import { adminAuth } from "../middlewares/admin-auth";
 import Anthropic from "@anthropic-ai/sdk";
-import { computeSlots, getNextAvailableDays, formatSlotsForPrompt } from "../lib/availability-slots";
+import { computeSlots, getNextAvailableDays, formatSlotsForPrompt, REQUIRED_FIELDS_DIRECTIVE, getClientPublicToken, formatBusinessHoursForPrompt } from "../lib/availability-slots";
 
 const router = Router();
 router.use(adminAuth);
@@ -305,26 +305,53 @@ router.post("/admin/clients/:id/calls/initiate", async (req, res) => {
   }).returning();
   const callRecord = inserted[0];
 
-  const replitDomain = process.env.REPLIT_DEV_DOMAIN;
-  const webhookUrl = replitDomain ? `https://${replitDomain}/api/calls/webhook` : null;
+  const serverUrl = process.env.SERVER_URL;
+  const webhookUrl = serverUrl ? `${serverUrl}/api/calls/webhook` : null;
 
   let task = config.qualificationCriteria?.trim()
     ? `${config.prompt}\n\nQualification Criteria:\n${config.qualificationCriteria}`
     : config.prompt;
   console.log(`[admin/initiate] Base task length=${task.length} chars, qualificationCriteria="${config.qualificationCriteria?.slice(0, 60) ?? "none"}"`);
   const avail = await ensureClientAvailability(clientId);
-  console.log(`[admin/initiate] Availability: preventOverlaps=${avail.preventOverlaps} timezone=${avail.timezone} days=${avail.availableDays}`);
-  if (avail.preventOverlaps) {
+  console.log(`[admin/initiate] Availability: preventOverlaps=${avail.preventOverlaps} timezone=${avail.timezone}`);
+  const initiateBlandTools: unknown[] = [];
+  if (serverUrl) {
+    const clientToken = getClientPublicToken(clientId);
+    const hoursLine = formatBusinessHoursForPrompt(avail);
+    task = `${task}\n\n${hoursLine}\n\nBefore offering or confirming any appointment time, you MUST call the check_availability tool with the requested date in YYYY-MM-DD format to get real-time available slots. Never confirm a time without first checking availability.`;
+    initiateBlandTools.push({
+      name: "check_availability",
+      description: "Check available appointment slots for a specific date. Always call this before offering or confirming any appointment time.",
+      url: `${serverUrl}/api/availability/${clientToken}/slots`,
+      method: "GET",
+      headers: {},
+      query: { date: "{{date}}" },
+      response_data: [
+        { name: "available_slots", data: "$.slots", context: "Available appointment times for the requested date" },
+        { name: "timezone", data: "$.timezone", context: "Timezone for the slots" },
+        { name: "business_hours", data: "$.business_hours", context: "Business operating hours" },
+      ],
+      input_schema: {
+        speech: "Let me check available times for that date.",
+        type: "object",
+        properties: {
+          date: { type: "string", description: "Date in YYYY-MM-DD format (e.g. 2026-06-27)" },
+        },
+        required: ["date"],
+      },
+    });
+    console.log(`[admin/initiate] BlandAI tool 'check_availability' registered at ${serverUrl}/api/availability/${clientToken}/slots`);
+  } else {
+    // Fallback: static injection when SERVER_URL not set
     const nextDays = getNextAvailableDays(5, avail);
-    console.log(`[admin/initiate] Next available days: ${nextDays.join(", ")}`);
     const allSlots: Date[] = [];
     for (const day of nextDays) { allSlots.push(...await computeSlots(clientId, day, avail)); }
-    console.log(`[admin/initiate] Total free slots: ${allSlots.length}`);
-    const slotsText = formatSlotsForPrompt(allSlots, avail.timezone);
-    if (slotsText) { task = `${task}\n\n${slotsText}`; console.log(`[admin/initiate] Slots appended, final task length=${task.length}`); }
-    else { console.log(`[admin/initiate] No slots available — task unchanged`); }
+    const slotsText = formatSlotsForPrompt(allSlots, avail.timezone, avail);
+    if (slotsText) { task = `${task}\n\n${slotsText}`; }
+    console.log(`[admin/initiate] SERVER_URL not set — static fallback (${allSlots.length} slots)`);
   }
-  console.log(`[admin/initiate] REPLIT_DEV_DOMAIN="${process.env.REPLIT_DEV_DOMAIN ?? "NOT SET"}" webhookUrl="${webhookUrl ?? "NONE"}"`);
+  task = `${task}\n\n${REQUIRED_FIELDS_DIRECTIVE}`;
+  console.log(`[admin/initiate] SERVER_URL="${serverUrl ?? "NOT SET"}" webhookUrl="${webhookUrl ?? "NONE — poller will sync instead"}"`);
   console.log(`[admin/initiate] Full task being sent to BlandAI:\n---\n${task}\n---`);
   const blandPayload: Record<string, unknown> = {
     phone_number: contact[0].phone, task, voice: config.voice,
@@ -333,6 +360,7 @@ router.post("/admin/clients/:id/calls/initiate", async (req, res) => {
     metadata: { call_db_id: callRecord.id, contact_id: contactId, client_id: clientId },
   };
   if (webhookUrl) blandPayload.webhook = webhookUrl;
+  if (initiateBlandTools.length > 0) blandPayload.tools = initiateBlandTools;
 
   const blandRes = await fetch(`${BLAND_BASE_URL}/calls`, {
     method: "POST",
@@ -501,22 +529,49 @@ router.post("/admin/clients/:id/calls/bulk", async (req, res) => {
       const inserted = await db.insert(callsTable).values({ clientId, contactId, contactName: contact[0].name, contactPhone: contact[0].phone, status: "queued" }).returning();
       const callRecord = inserted[0];
 
-      const replitDomain = process.env.REPLIT_DEV_DOMAIN;
-      const webhookUrl = replitDomain ? `https://${replitDomain}/api/calls/webhook` : null;
+      const bulkServerUrl = process.env.SERVER_URL;
+      const webhookUrl = bulkServerUrl ? `${bulkServerUrl}/api/calls/webhook` : null;
       let bulkTask = config.qualificationCriteria?.trim()
         ? `${config.prompt}\n\nQualification Criteria:\n${config.qualificationCriteria}`
         : config.prompt;
       const bulkAvail = await ensureClientAvailability(clientId);
       console.log(`[admin/bulk] contactId=${contactId} preventOverlaps=${bulkAvail.preventOverlaps} webhookUrl="${webhookUrl ?? "NONE"}"`);
-      if (bulkAvail.preventOverlaps) {
-        const nextDays = getNextAvailableDays(5, bulkAvail);
-        const allSlots: Date[] = [];
-        for (const day of nextDays) { allSlots.push(...await computeSlots(clientId, day, bulkAvail)); }
-        console.log(`[admin/bulk] contactId=${contactId} free slots=${allSlots.length}`);
-        const slotsText = formatSlotsForPrompt(allSlots, bulkAvail.timezone);
-        if (slotsText) { bulkTask = `${bulkTask}\n\n${slotsText}`; console.log(`[admin/bulk] Slots appended, task length=${bulkTask.length}`); }
-        else { console.log(`[admin/bulk] No slots — task unchanged`); }
+      const bulkBlandTools: unknown[] = [];
+      if (bulkServerUrl) {
+        const clientToken = getClientPublicToken(clientId);
+        const hoursLine = formatBusinessHoursForPrompt(bulkAvail);
+        bulkTask = `${bulkTask}\n\n${hoursLine}\n\nBefore offering or confirming any appointment time, you MUST call the check_availability tool with the requested date in YYYY-MM-DD format to get real-time available slots. Never confirm a time without first checking availability.`;
+        bulkBlandTools.push({
+          name: "check_availability",
+          description: "Check available appointment slots for a specific date. Always call this before offering or confirming any appointment time.",
+          url: `${bulkServerUrl}/api/availability/${clientToken}/slots`,
+          method: "GET",
+          headers: {},
+          query: { date: "{{date}}" },
+          response_data: [
+            { name: "available_slots", data: "$.slots", context: "Available appointment times for the requested date" },
+            { name: "timezone", data: "$.timezone", context: "Timezone for the slots" },
+            { name: "business_hours", data: "$.business_hours", context: "Business operating hours" },
+          ],
+          input_schema: {
+            speech: "Let me check available times for that date.",
+            type: "object",
+            properties: {
+              date: { type: "string", description: "Date in YYYY-MM-DD format (e.g. 2026-06-27)" },
+            },
+            required: ["date"],
+          },
+        });
+        console.log(`[admin/bulk] contactId=${contactId} BlandAI tool 'check_availability' registered`);
+      } else {
+        const bulkNextDays = getNextAvailableDays(5, bulkAvail);
+        const allBulkSlots: Date[] = [];
+        for (const day of bulkNextDays) { allBulkSlots.push(...await computeSlots(clientId, day, bulkAvail)); }
+        const slotsText = formatSlotsForPrompt(allBulkSlots, bulkAvail.timezone, bulkAvail);
+        if (slotsText) { bulkTask = `${bulkTask}\n\n${slotsText}`; }
+        console.log(`[admin/bulk] contactId=${contactId} SERVER_URL not set — static fallback (${allBulkSlots.length} slots)`);
       }
+      bulkTask = `${bulkTask}\n\n${REQUIRED_FIELDS_DIRECTIVE}`;
       console.log(`[admin/bulk] Full task for contactId=${contactId}:\n---\n${bulkTask}\n---`);
       const blandPayload: Record<string, unknown> = {
         phone_number: contact[0].phone, task: bulkTask, voice: config.voice,
@@ -524,6 +579,7 @@ router.post("/admin/clients/:id/calls/bulk", async (req, res) => {
         record: true, metadata: { call_db_id: callRecord.id, contact_id: contactId, client_id: clientId },
       };
       if (webhookUrl) blandPayload.webhook = webhookUrl;
+      if (bulkBlandTools.length > 0) blandPayload.tools = bulkBlandTools;
 
       const blandRes = await fetch(`${BLAND_BASE_URL}/calls`, { method: "POST", headers: { Authorization: BLAND_API_KEY!, "Content-Type": "application/json" }, body: JSON.stringify(blandPayload) });
       if (blandRes.ok) {
@@ -681,17 +737,61 @@ Rules:
             const promptWithCriteria = config.qualificationCriteria?.trim()
               ? `${basePrompt}\n\nQualification Criteria:\n${config.qualificationCriteria}`
               : basePrompt;
-            const effectivePrompt = input.custom_topic
+            const withTopic = input.custom_topic
               ? `${promptWithCriteria}\n\nIMPORTANT — Special instructions for this call: ${input.custom_topic}`
               : promptWithCriteria;
+
+            // Build availability tool or fall back to static injection
+            const chatAvailRows = await db.select().from(availabilityTable).where(eq(availabilityTable.clientId, clientId)).limit(1);
+            const chatAvail = chatAvailRows[0];
+            let effectiveTask = withTopic;
+            const chatBlandTools: unknown[] = [];
+            const chatServerUrl = process.env.SERVER_URL;
+            if (chatAvail && chatServerUrl) {
+              const clientToken = getClientPublicToken(clientId);
+              const hoursLine = formatBusinessHoursForPrompt(chatAvail);
+              effectiveTask = `${withTopic}\n\n${hoursLine}\n\nBefore offering or confirming any appointment time, you MUST call the check_availability tool with the requested date in YYYY-MM-DD format to get real-time available slots. Never confirm a time without first checking availability.`;
+              chatBlandTools.push({
+                name: "check_availability",
+                description: "Check available appointment slots for a specific date. Always call this before offering or confirming any appointment time.",
+                url: `${chatServerUrl}/api/availability/${clientToken}/slots`,
+                method: "GET",
+                headers: {},
+                query: { date: "{{date}}" },
+                response_data: [
+                  { name: "available_slots", data: "$.slots", context: "Available appointment times for the requested date" },
+                  { name: "timezone", data: "$.timezone", context: "Timezone for the slots" },
+                  { name: "business_hours", data: "$.business_hours", context: "Business operating hours" },
+                ],
+                input_schema: {
+                  speech: "Let me check available times for that date.",
+                  type: "object",
+                  properties: {
+                    date: { type: "string", description: "Date in YYYY-MM-DD format (e.g. 2026-06-27)" },
+                  },
+                  required: ["date"],
+                },
+              });
+              console.log(`[chat-initiate] BlandAI tool 'check_availability' registered for clientId=${clientId}`);
+            } else if (chatAvail) {
+              // Static fallback when SERVER_URL not set
+              const nextDays = getNextAvailableDays(5, chatAvail);
+              const allSlots: Date[] = [];
+              for (const day of nextDays) { allSlots.push(...await computeSlots(clientId, day, chatAvail)); }
+              const slotsText = formatSlotsForPrompt(allSlots, chatAvail.timezone, chatAvail);
+              if (slotsText) { effectiveTask = `${withTopic}\n\n${slotsText}`; }
+              console.log(`[chat-initiate] SERVER_URL not set — static fallback (${allSlots.length} slots)`);
+            } else {
+              console.log(`[chat-initiate] No availability row for clientId=${clientId}`);
+            }
+            const effectivePrompt = `${effectiveTask}\n\n${REQUIRED_FIELDS_DIRECTIVE}`;
 
             const inserted = await db.insert(callsTable).values({
               clientId, contactId: contactDbId ?? null, contactName: contactName ?? null, contactPhone, status: "queued",
             }).returning();
             const callRecord = inserted[0];
 
-            const replitDomain = process.env.REPLIT_DEV_DOMAIN;
-            const webhookUrl = replitDomain ? `https://${replitDomain}/api/calls/webhook` : null;
+            const webhookUrl = chatServerUrl ? `${chatServerUrl}/api/calls/webhook` : null;
 
             const blandPayload: Record<string, unknown> = {
               phone_number: contactPhone, task: effectivePrompt, voice: config.voice,
@@ -700,7 +800,9 @@ Rules:
               metadata: { call_db_id: callRecord.id, contact_id: contactDbId, client_id: clientId },
             };
             if (webhookUrl) blandPayload.webhook = webhookUrl;
+            if (chatBlandTools.length > 0) blandPayload.tools = chatBlandTools;
 
+            console.log(`[chat-initiate] FULL TASK STRING SENT TO BLANDAI:\n---\n${effectivePrompt}\n---`);
             const blandRes = await fetch(`${BLAND_BASE_URL}/calls`, {
               method: "POST",
               headers: { Authorization: BLAND_API_KEY, "Content-Type": "application/json" },
