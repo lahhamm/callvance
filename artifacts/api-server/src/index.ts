@@ -1,6 +1,22 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { syncInProgressCalls } from "./routes/calls";
+import { pool } from "@workspace/db";
+
+// ── Startup migrations ─────────────────────────────────────────────────────
+// Additive-only, all idempotent (IF NOT EXISTS). Add new columns here rather
+// than requiring a manual `drizzle-kit push` step on every deploy.
+async function runMigrations() {
+  try {
+    await pool.query(`
+      ALTER TABLE availability_settings
+        ADD COLUMN IF NOT EXISTS notification_phone TEXT;
+    `);
+    logger.info("Startup migrations applied");
+  } catch (err) {
+    logger.error({ err }, "Startup migration failed — server will still start but schema may be incomplete");
+  }
+}
 
 const rawPort = process.env["PORT"] ?? "3001";
 const port = Number(rawPort);
@@ -8,6 +24,8 @@ const port = Number(rawPort);
 if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
+
+await runMigrations();
 
 app.listen(port, (err) => {
   if (err) {

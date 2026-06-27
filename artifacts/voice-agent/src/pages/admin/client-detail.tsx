@@ -77,7 +77,7 @@ export default function ClientDetail() {
   });
   const { data: bookings = [] } = useQuery<Booking[]>({ queryKey: ["admin-bookings", clientId], queryFn: () => apiFetch(`/admin/clients/${clientId}/bookings`) });
   const { data: config } = useQuery<AgentConfig>({ queryKey: ["admin-config", clientId], queryFn: () => apiFetch(`/admin/clients/${clientId}/config`) });
-  const { data: avail } = useQuery<Availability>({ queryKey: ["admin-avail", clientId], queryFn: () => apiFetch(`/admin/clients/${clientId}/availability`) });
+  const { data: avail, isLoading: availLoading, isError: availError } = useQuery<Availability>({ queryKey: ["admin-avail", clientId], queryFn: () => apiFetch(`/admin/clients/${clientId}/availability`) });
 
   const toggleMutation = useMutation({
     mutationFn: (isActive: boolean) => apiFetch(`/admin/clients/${clientId}`, { method: "PATCH", body: JSON.stringify({ isActive }) }),
@@ -124,7 +124,12 @@ export default function ClientDetail() {
       {tab === "Agent Configuration" && config && <ConfigTab clientId={clientId} config={config} qc={qc} toast={toast} />}
       {tab === "Calls" && <CallsTab clientId={clientId} calls={calls} onTranscript={setTranscript} qc={qc} toast={toast} />}
       {tab === "Bookings" && <BookingsTab clientId={clientId} bookings={bookings} qc={qc} toast={toast} />}
-      {tab === "Schedule" && avail && <AvailabilityTab clientId={clientId} avail={avail} qc={qc} toast={toast} />}
+      {tab === "Schedule" && (
+        availLoading ? <div className="p-8 text-center text-muted-foreground text-sm">Loading schedule…</div>
+        : availError ? <div className="p-8 text-center text-destructive text-sm">Failed to load schedule settings. Please refresh the page.</div>
+        : avail ? <AvailabilityTab clientId={clientId} avail={avail} qc={qc} toast={toast} />
+        : <div className="p-8 text-center text-muted-foreground text-sm">No schedule data found.</div>
+      )}
       {tab === "Access" && client && <AccessTab clientId={clientId} client={client} qc={qc} toast={toast} />}
 
       {/* Transcript */}
