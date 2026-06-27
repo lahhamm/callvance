@@ -697,8 +697,6 @@ Rules:
   }];
 
   try {
-    console.log(`[chat] ── NEW REQUEST ── clientId=${clientId} message="${message.slice(0, 120)}" historyLen=${history.length} contacts=${contacts.length}`);
-
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5",
       max_tokens: 1024,
@@ -710,18 +708,10 @@ Rules:
       ],
     });
 
-    console.log(`[chat] Claude response: stop_reason="${response.stop_reason}" content_blocks=${response.content.length} [${response.content.map(b => b.type + (b.type === "tool_use" ? `(${(b as Anthropic.ToolUseBlock).name})` : "")).join(", ")}]`);
-
     const toolUse = response.content.find(b => b.type === "tool_use");
-
-    if (!toolUse) {
-      const textBlocks = response.content.filter(b => b.type === "text").map(b => (b as Anthropic.TextBlock).text).join(" ");
-      console.log(`[chat] No tool_use block — Claude replied with text only: "${textBlocks.slice(0, 200)}"`);
-    }
 
     if (toolUse && toolUse.type === "tool_use" && toolUse.name === "initiate_call") {
       const input = toolUse.input as { contact_id?: number; phone_number?: string; custom_topic?: string };
-      console.log(`[chat] ✓ Claude invoked initiate_call: contact_id=${input.contact_id ?? "none"} phone_number="${input.phone_number ?? "none"}" custom_topic="${input.custom_topic?.slice(0, 80) ?? "none"}"`);
 
       let callResult: { success: boolean; message: string; call?: object } = { success: false, message: "Call failed." };
 
@@ -733,24 +723,16 @@ Rules:
         if (contactDbId) {
           const contact = contacts.find(c => c.id === contactDbId);
           if (!contact) {
-            console.log(`[chat] ✗ Contact ID ${contactDbId} not found in contacts list (${contacts.length} contacts for clientId=${clientId})`);
             callResult = { success: false, message: `Contact ID ${contactDbId} not found in this client's contacts.` };
           } else {
             contactPhone = contact.phone;
             contactName = contact.name;
-            console.log(`[chat] ✓ Resolved contact_id=${contactDbId} → name="${contactName}" phone="${contactPhone}"`);
           }
         }
 
-        if (!contactPhone) {
-          console.log(`[chat] ✗ No phone number available — contact_id=${contactDbId ?? "none"} phone_number="${input.phone_number ?? "none"}"`);
-        }
-
         if (contactPhone && !callResult.message.includes("not found")) {
-          if (!BLAND_API_KEY) {
-            console.log(`[chat] ✗ BLAND_AI_API_KEY is not configured`);
-            callResult = { success: false, message: "BlandAI API key not configured." };
-          } else {
+          if (!BLAND_API_KEY) { callResult = { success: false, message: "BlandAI API key not configured." }; }
+          else {
             const basePrompt = config.prompt ?? "You are a helpful AI assistant.";
             const promptWithCriteria = config.qualificationCriteria?.trim()
               ? `${basePrompt}\n\nQualification Criteria:\n${config.qualificationCriteria}`
@@ -820,37 +802,31 @@ Rules:
             if (webhookUrl) blandPayload.webhook = webhookUrl;
             if (chatBlandTools.length > 0) blandPayload.tools = chatBlandTools;
 
-            console.log(`[chat-initiate] Task string length=${effectivePrompt.length} blandTools=${chatBlandTools.length} webhookUrl="${webhookUrl ?? "NONE"}" phone="${contactPhone}"`);
             console.log(`[chat-initiate] FULL TASK STRING SENT TO BLANDAI:\n---\n${effectivePrompt}\n---`);
-            console.log(`[chat-initiate] Sending POST to BlandAI ${BLAND_BASE_URL}/calls ...`);
             const blandRes = await fetch(`${BLAND_BASE_URL}/calls`, {
               method: "POST",
               headers: { Authorization: BLAND_API_KEY, "Content-Type": "application/json" },
               body: JSON.stringify(blandPayload),
             });
 
-            console.log(`[chat-initiate] BlandAI HTTP status: ${blandRes.status} ${blandRes.statusText}`);
             if (blandRes.ok) {
               const blandData = (await blandRes.json()) as { call_id?: string; c_id?: string; id?: string };
               const blandCallId = blandData.call_id ?? blandData.c_id ?? blandData.id ?? null;
-              console.log(`[chat-initiate] ✓ BlandAI accepted call. call_id="${blandCallId}" raw=${JSON.stringify(blandData).slice(0, 300)}`);
+              console.log(`[chat-initiate] BlandAI response call_id=${blandCallId}`, JSON.stringify(blandData).slice(0, 200));
               await db.update(callsTable).set({ blandCallId, status: "in-progress", startedAt: new Date() }).where(eq(callsTable.id, callRecord.id));
               if (contactDbId) await db.update(contactsTable).set({ lastCalledAt: new Date(), status: "contacted" }).where(eq(contactsTable.id, contactDbId));
               callResult = { success: true, message: `Call to ${contactName ?? contactPhone} initiated.`, call: { id: callRecord.id, phone: contactPhone, name: contactName } };
             } else {
-              const errBody = await blandRes.text();
-              console.log(`[chat-initiate] ✗ BlandAI rejected call. status=${blandRes.status} body="${errBody.slice(0, 300)}"`);
+              const err = await blandRes.text();
               await db.update(callsTable).set({ status: "failed" }).where(eq(callsTable.id, callRecord.id));
-              callResult = { success: false, message: `BlandAI error (${blandRes.status}): ${errBody}` };
+              callResult = { success: false, message: `BlandAI error: ${err}` };
             }
           }
         }
       } catch (err) {
-        console.error("[chat] ✗ Exception during call initiation:", err);
+        console.error("Admin chat tool error:", err);
         callResult = { success: false, message: "Internal error while initiating call." };
       }
-
-      console.log(`[chat] callResult: success=${callResult.success} message="${callResult.message}"`);
 
       const followUp = await anthropic.messages.create({
         model: "claude-haiku-4-5",
@@ -866,16 +842,14 @@ Rules:
       });
 
       const replyText = followUp.content.filter(b => b.type === "text").map(b => (b as Anthropic.TextBlock).text).join("");
-      console.log(`[chat] ── RESPONSE ── callInitiated=${callResult.success} reply="${replyText.slice(0, 120)}"`);
       res.json({ message: replyText || (callResult.success ? "Call initiated." : callResult.message), callInitiated: callResult.success, call: (callResult as { call?: object }).call });
       return;
     }
 
     const replyText = response.content.filter(b => b.type === "text").map(b => (b as Anthropic.TextBlock).text).join("");
-    console.log(`[chat] ── RESPONSE ── callInitiated=false (no tool use) reply="${replyText.slice(0, 120)}"`);
     res.json({ message: replyText, callInitiated: false });
   } catch (err) {
-    console.error("[chat] ✗ Unhandled error:", err);
+    console.error("Admin chat error:", err);
     res.status(500).json({ error: "Failed to process message" });
   }
 });
