@@ -366,8 +366,9 @@ export async function syncInProgressCalls(): Promise<void> {
           continue;
         }
 
-        // answered_by="human" → completed; anything else (voicemail, no-answer, unknown) → no-answer
-        const wasAnswered = data.answered_by === "human";
+        // answered_by="human" → definitely answered; "voicemail" → definitely not.
+        // "unknown" is ambiguous — BlandAI can't classify; defer to transcript presence below.
+        let wasAnswered = data.answered_by === "human";
         const updateData: Partial<typeof callsTable.$inferSelect> = {};
         if (isCompleted) {
           if (wasAnswered) {
@@ -375,7 +376,7 @@ export async function syncInProgressCalls(): Promise<void> {
             console.log(`[poll] Call id=${call.id} answered by human → completed`);
           } else {
             updateData.status = "no-answer"; updateData.endedAt = new Date();
-            console.log(`[poll] Call id=${call.id} ended but answered_by="${data.answered_by ?? "unknown"}" → no-answer`);
+            console.log(`[poll] Call id=${call.id} ended but answered_by="${data.answered_by ?? "unknown"}" → no-answer (tentative, may upgrade if transcript found)`);
           }
         } else if (isFailed) { updateData.status = "failed"; updateData.endedAt = new Date(); }
 
@@ -446,6 +447,15 @@ export async function syncInProgressCalls(): Promise<void> {
           } catch (err) {
             console.error(`[poll] Follow-up fetch failed for call id=${call.id}:`, err);
           }
+        }
+
+        // Upgrade "unknown" calls to completed when a transcript exists — a transcript
+        // proves a real conversation happened regardless of what BlandAI classified.
+        // "voicemail" stays no-answer even with a transcript.
+        if (!wasAnswered && data.answered_by !== "voicemail" && transcriptText) {
+          wasAnswered = true;
+          if (updateData.status === "no-answer") updateData.status = "completed";
+          console.log(`[poll] Call id=${call.id} upgraded no-answer → completed: answered_by="${data.answered_by ?? "unknown"}" but transcript present`);
         }
 
         if (isCompleted && wasAnswered && transcriptText) {
@@ -694,9 +704,12 @@ router.post("/calls/webhook", async (req, res) => {
   // ── Step 2: Determine new status ────────────────────────────────────────────
   const isCompleted = body.status === "completed" || body.status === "ended";
   const isFailed = body.status === "failed" || body.status === "error" || body.status === "no-answer";
-  // answered_by="human" means the call was actually picked up; voicemail/no-answer/unknown → no-answer
-  const wasAnswered = body.answered_by === "human";
-  console.log(`[webhook] Status mapping: incoming="${body.status}" answered_by="${body.answered_by ?? "?"}" → isCompleted=${isCompleted} isFailed=${isFailed} wasAnswered=${wasAnswered}`);
+  // answered_by="human" → definitely answered. "voicemail" → definitely not.
+  // "unknown" means BlandAI couldn't classify — treat as answered if a transcript is present,
+  // since a real conversation is the only way a transcript gets generated.
+  const wasAnswered = body.answered_by === "human" ||
+    (body.answered_by !== "voicemail" && body.answered_by !== "no-answer" && !!transcriptText);
+  console.log(`[webhook] Status mapping: incoming="${body.status}" answered_by="${body.answered_by ?? "?"}" hasTranscript=${!!transcriptText} → isCompleted=${isCompleted} isFailed=${isFailed} wasAnswered=${wasAnswered}`);
 
   const updateData: Partial<typeof callsTable.$inferSelect> = {};
   if (isCompleted) {
@@ -713,10 +726,13 @@ router.post("/calls/webhook", async (req, res) => {
   if (body.call_length) updateData.durationSeconds = Math.round(body.call_length * 60);
   else if (body.duration) updateData.durationSeconds = Math.round(body.duration);
 
-  // ── Step 3: AI processing (only on calls answered by a human) ───────────────
-  if (isCompleted && !wasAnswered) {
-    // Not answered — just write the no-answer status and exit
-    console.log(`[webhook] Call not answered — skipping AI processing and booking extraction`);
+  // ── Step 3: AI processing (only on calls answered by a human or unknown-with-transcript) ─
+  // Bail out early only for definitively-not-answered calls (voicemail / no-answer).
+  // "unknown" with no transcript still gets a follow-up fetch below before we give up.
+  const definitelyNotAnswered = isCompleted && !wasAnswered &&
+    (body.answered_by === "voicemail" || body.answered_by === "no-answer");
+  if (definitelyNotAnswered) {
+    console.log(`[webhook] Call not answered (answered_by="${body.answered_by}") — skipping AI processing and booking extraction`);
     if (Object.keys(updateData).length > 0) {
       await db.update(callsTable).set(updateData).where(eq(callsTable.id, callRecord.id));
       console.log(`[webhook] ✓ no-answer status written for call id=${callRecord.id}`);
@@ -764,6 +780,13 @@ router.post("/calls/webhook", async (req, res) => {
       } else {
         console.log(`[webhook] Cannot fetch transcript — blandId="${blandId}" BLAND_API_KEY=${!!BLAND_API_KEY}`);
       }
+    }
+
+    // If we arrived here with answered_by="unknown" and no transcript in the original payload,
+    // the follow-up fetch may have just retrieved one — re-evaluate wasAnswered.
+    if (!wasAnswered && body.answered_by !== "voicemail" && body.answered_by !== "no-answer" && transcriptText) {
+      console.log(`[webhook] Call id=${callRecord.id} upgraded: answered_by="${body.answered_by ?? "unknown"}" but transcript now present → treating as completed`);
+      if (updateData.status === "no-answer") updateData.status = "completed";
     }
 
     if (transcriptText) {
