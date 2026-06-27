@@ -322,9 +322,10 @@ router.post("/admin/clients/:id/calls/initiate", async (req, res) => {
     initiateBlandTools.push({
       name: "check_availability",
       description: "Check available appointment slots for a specific date. Always call this before offering or confirming any appointment time.",
-      url: `${serverUrl}/api/availability/${clientToken}/slots/{{date}}`,
-      method: "GET",
-      headers: {},
+      url: `${serverUrl}/api/availability/${clientToken}/slots`,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: { date: "{{input.date}}" },
       response_data: [
         { name: "available_slots", data: "$.slots", context: "Available appointment times for the requested date" },
         { name: "timezone", data: "$.timezone", context: "Timezone for the slots" },
@@ -332,11 +333,12 @@ router.post("/admin/clients/:id/calls/initiate", async (req, res) => {
       ],
       input_schema: {
         speech: "Let me check available times for that date.",
+        example: { speech: "Let me check available times for that date.", date: "2026-06-30" },
         type: "object",
         properties: {
-          date: { type: "string", description: "Date in YYYY-MM-DD format (e.g. 2026-06-27)" },
+          speech: "string",
+          date: "YYYY-MM-DD format, e.g. 2026-06-30",
         },
-        required: ["date"],
       },
     });
     console.log(`[admin/initiate] BlandAI tool 'check_availability' registered at ${serverUrl}/api/availability/${clientToken}/slots`);
@@ -544,9 +546,10 @@ router.post("/admin/clients/:id/calls/bulk", async (req, res) => {
         bulkBlandTools.push({
           name: "check_availability",
           description: "Check available appointment slots for a specific date. Always call this before offering or confirming any appointment time.",
-          url: `${bulkServerUrl}/api/availability/${clientToken}/slots/{{date}}`,
-          method: "GET",
-          headers: {},
+          url: `${bulkServerUrl}/api/availability/${clientToken}/slots`,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: { date: "{{input.date}}" },
           response_data: [
             { name: "available_slots", data: "$.slots", context: "Available appointment times for the requested date" },
             { name: "timezone", data: "$.timezone", context: "Timezone for the slots" },
@@ -554,11 +557,12 @@ router.post("/admin/clients/:id/calls/bulk", async (req, res) => {
           ],
           input_schema: {
             speech: "Let me check available times for that date.",
+            example: { speech: "Let me check available times for that date.", date: "2026-06-30" },
             type: "object",
             properties: {
-              date: { type: "string", description: "Date in YYYY-MM-DD format (e.g. 2026-06-27)" },
+              speech: "string",
+              date: "YYYY-MM-DD format, e.g. 2026-06-30",
             },
-            required: ["date"],
           },
         });
         console.log(`[admin/bulk] contactId=${contactId} BlandAI tool 'check_availability' registered`);
@@ -754,9 +758,10 @@ Rules:
               chatBlandTools.push({
                 name: "check_availability",
                 description: "Check available appointment slots for a specific date. Always call this before offering or confirming any appointment time.",
-                url: `${chatServerUrl}/api/availability/${clientToken}/slots/{{date}}`,
-                method: "GET",
-                headers: {},
+                url: `${chatServerUrl}/api/availability/${clientToken}/slots`,
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: { date: "{{input.date}}" },
                 response_data: [
                   { name: "available_slots", data: "$.slots", context: "Available appointment times for the requested date" },
                   { name: "timezone", data: "$.timezone", context: "Timezone for the slots" },
@@ -764,11 +769,12 @@ Rules:
                 ],
                 input_schema: {
                   speech: "Let me check available times for that date.",
+                  example: { speech: "Let me check available times for that date.", date: "2026-06-30" },
                   type: "object",
                   properties: {
-                    date: { type: "string", description: "Date in YYYY-MM-DD format (e.g. 2026-06-27)" },
+                    speech: "string",
+                    date: "YYYY-MM-DD format, e.g. 2026-06-30",
                   },
-                  required: ["date"],
                 },
               });
               console.log(`[chat-initiate] BlandAI tool 'check_availability' registered for clientId=${clientId}`);

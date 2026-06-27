@@ -78,9 +78,10 @@ async function initiateCallForContact(contactId: number) {
       blandTools.push({
         name: "check_availability",
         description: "Check available appointment slots for a specific date. Always call this before offering or confirming any appointment time.",
-        url: `${serverUrl}/api/availability/${clientToken}/slots/{{date}}`,
-        method: "GET",
-        headers: {},
+        url: `${serverUrl}/api/availability/${clientToken}/slots`,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: { date: "{{input.date}}" },
         response_data: [
           { name: "available_slots", data: "$.slots", context: "Available appointment times for the requested date" },
           { name: "timezone", data: "$.timezone", context: "Timezone for the slots" },
@@ -88,11 +89,12 @@ async function initiateCallForContact(contactId: number) {
         ],
         input_schema: {
           speech: "Let me check available times for that date.",
+          example: { speech: "Let me check available times for that date.", date: "2026-06-30" },
           type: "object",
           properties: {
-            date: { type: "string", description: "Date in YYYY-MM-DD format (e.g. 2026-06-27)" },
+            speech: "string",
+            date: "YYYY-MM-DD format, e.g. 2026-06-30",
           },
-          required: ["date"],
         },
       });
       console.log(`[initiate] BlandAI tool 'check_availability' registered at ${serverUrl}/api/availability/${clientToken}/slots`);
@@ -771,17 +773,14 @@ router.get("/calls/:id", adminAuth, async (req, res) => {
 // ── PUBLIC: GET /api/availability/:clientToken/slots?date=YYYY-MM-DD ─────────
 // No auth required — clientToken is an HMAC derived from clientId + SESSION_SECRET.
 // Called by BlandAI mid-conversation to check real-time available slots.
-// Accept date as either a path segment (/slots/2026-06-30) or query string (/slots?date=2026-06-30)
-// BlandAI interpolates {{date}} in the URL path; query string is kept as a fallback for manual testing.
-router.get("/availability/:clientToken/slots/:date", async (req, res) => {
-  const { clientToken } = req.params;
-  const date = (req.params.date ?? "").trim();
-
+// BlandAI calls this as POST with JSON body { date: "YYYY-MM-DD" } ({{input.date}} interpolation).
+// GET with :date path segment is kept for manual testing.
+async function handleAvailabilityRequest(clientToken: string, date: string, res: import("express").Response) {
   console.log(`[availability] ── REQUEST ── token="${clientToken}" date="${date || "MISSING"}"`);
 
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     console.log(`[availability] ✗ Bad date param: "${date}" — returning 400`);
-    res.status(400).json({ error: "date required as path segment (/slots/YYYY-MM-DD) or query string (?date=YYYY-MM-DD)", slots: [] });
+    res.status(400).json({ error: "date required as YYYY-MM-DD", slots: [] });
     return;
   }
 
@@ -820,6 +819,20 @@ router.get("/availability/:clientToken/slots/:date", async (req, res) => {
     business_hours: `${avail.startTime} to ${avail.endTime}`,
     slots: formatted,
   });
+}
+
+// POST — used by BlandAI (body: { date: "YYYY-MM-DD" } via {{input.date}} interpolation)
+router.post("/availability/:clientToken/slots", async (req, res) => {
+  const { clientToken } = req.params;
+  const date = ((req.body as { date?: string }).date ?? "").trim();
+  console.log(`[availability] POST body: ${JSON.stringify(req.body)}`);
+  await handleAvailabilityRequest(clientToken, date, res);
+});
+
+// GET — kept for manual testing: /api/availability/:token/slots/2026-06-30
+router.get("/availability/:clientToken/slots/:date", async (req, res) => {
+  const { clientToken, date } = req.params;
+  await handleAvailabilityRequest(clientToken, (date ?? "").trim(), res);
 });
 
 export default router;
