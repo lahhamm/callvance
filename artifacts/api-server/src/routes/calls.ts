@@ -300,7 +300,7 @@ ${transcript.slice(0, 3000)}`,
   }
 }
 
-async function generateAISummary(transcript: string, contactName: string | null, callId?: number): Promise<{ summary: string; keyInsights: string[]; leadScore: string }> {
+async function generateAISummary(transcript: string, contactName: string | null, callId?: number): Promise<{ summary: string; keyInsights: string[]; leadScore: string; contactName: string | null }> {
   console.log(`[ai] generateAISummary called callId=${callId ?? "?"} transcriptLength=${transcript.length} contactName="${contactName}"`);
   console.log(`[ai] → Calling Claude (haiku) for summary. transcriptSlice="${transcript.slice(0, 200).replace(/\n/g, " ")}"`);
   try {
@@ -316,9 +316,12 @@ Extract the most useful information from this call:
 1. A 1-2 sentence plain-English SUMMARY of what happened and the outcome.
 2. Up to 4 KEY INSIGHTS — short, punchy facts (5-8 words each) about the customer's situation, interests, objections, or next steps.
 3. A LEAD SCORE — classify the lead as exactly one of: "Hot" (ready to buy or very interested), "Warm" (interested but needs nurturing), or "Cold" (not interested or poor fit).
+4. CONTACT NAME — if the customer states their first and/or last name at any point in the conversation, return it as "contactName". If no name was mentioned, return null.
 
 Respond with ONLY valid JSON in this format:
-{"summary": "...", "keyInsights": ["...", "...", "..."], "leadScore": "Hot"|"Warm"|"Cold"}
+{"summary": "...", "keyInsights": ["...", "...", "..."], "leadScore": "Hot"|"Warm"|"Cold", "contactName": "First Last"}
+
+If no name was mentioned, omit the field or set it to null.
 
 TRANSCRIPT:
 ${transcript.slice(0, 3000)}`
@@ -328,21 +331,36 @@ ${transcript.slice(0, 3000)}`
     const text = response.content.find(b => b.type === "text");
     if (!text || text.type !== "text") {
       console.log(`[ai] Claude returned no text block callId=${callId ?? "?"}`);
-      return { summary: "", keyInsights: [], leadScore: "" };
+      return { summary: "", keyInsights: [], leadScore: "", contactName: null };
     }
 
     console.log(`[ai] Claude raw summary response callId=${callId ?? "?"}: ${text.text.slice(0, 300)}`);
-    const parsed = parseClaudeJSON<{ summary: string; keyInsights: string[]; leadScore: string }>(text.text);
+    const parsed = parseClaudeJSON<{ summary: string; keyInsights: string[]; leadScore: string; contactName?: string | null }>(text.text);
     const result = {
       summary: parsed.summary || "",
       keyInsights: Array.isArray(parsed.keyInsights) ? parsed.keyInsights.slice(0, 4) : [],
       leadScore: ["Hot", "Warm", "Cold"].includes(parsed.leadScore) ? parsed.leadScore : "",
+      contactName: parsed.contactName?.trim() || null,
     };
-    console.log(`[ai] Summary parsed callId=${callId ?? "?"}: leadScore="${result.leadScore}" summary="${result.summary.slice(0, 80)}"`);
+    console.log(`[ai] Summary parsed callId=${callId ?? "?"}: leadScore="${result.leadScore}" contactName="${result.contactName ?? "none"}" summary="${result.summary.slice(0, 80)}"`);
     return result;
   } catch (err) {
     console.error(`[ai] generateAISummary failed callId=${callId ?? "?"}:`, err);
-    return { summary: "", keyInsights: [], leadScore: "" };
+    return { summary: "", keyInsights: [], leadScore: "", contactName: null };
+  }
+}
+
+/** Write an AI-extracted name back to the contacts table if the contact doesn't already have one. */
+async function backfillContactName(extractedName: string, callId: number, contactId: number | null): Promise<void> {
+  console.log(`[ai] Name extracted from transcript for callId=${callId}: "${extractedName}"`);
+  if (!contactId) { console.log(`[ai] No contactId on call id=${callId} — skipping contacts backfill`); return; }
+  const existing = await db.select({ name: contactsTable.name }).from(contactsTable).where(eq(contactsTable.id, contactId)).limit(1);
+  if (!existing[0]) { return; }
+  if (existing[0].name?.trim()) {
+    console.log(`[ai] Contact id=${contactId} already has name="${existing[0].name}" — not overwriting`);
+  } else {
+    await db.update(contactsTable).set({ name: extractedName }).where(eq(contactsTable.id, contactId));
+    console.log(`[ai] ✓ contacts.name updated to "${extractedName}" for contactId=${contactId}`);
   }
 }
 
@@ -493,7 +511,11 @@ export async function syncInProgressCalls(): Promise<void> {
           if (aiResult.summary) updateData.summary = aiResult.summary;
           if (aiResult.keyInsights.length > 0) updateData.keyInsights = JSON.stringify(aiResult.keyInsights);
           if (aiResult.leadScore) updateData.leadScore = aiResult.leadScore;
-          console.log(`[poll] AI result for call id=${call.id}: leadScore="${aiResult.leadScore}" summary="${aiResult.summary.slice(0, 80)}"`);
+          if (aiResult.contactName && !call.contactName?.trim()) {
+            updateData.contactName = aiResult.contactName;
+            await backfillContactName(aiResult.contactName, call.id, call.contactId ?? null);
+          }
+          console.log(`[poll] AI result for call id=${call.id}: leadScore="${aiResult.leadScore}" contactName="${aiResult.contactName ?? "none"}" summary="${aiResult.summary.slice(0, 80)}"`);
         } else if (isCompleted && !transcriptText) {
           console.log(`[poll] Call id=${call.id} completed with no transcript after follow-up — marking complete with no summary`);
         } else if (isCompleted && !wasAnswered) {
@@ -585,7 +607,11 @@ export async function syncInProgressCalls(): Promise<void> {
         if (aiResult.summary) retryUpdate.summary = aiResult.summary;
         if (aiResult.keyInsights.length > 0) retryUpdate.keyInsights = JSON.stringify(aiResult.keyInsights);
         if (aiResult.leadScore) retryUpdate.leadScore = aiResult.leadScore;
-        console.log(`[poll][retry] AI result for call id=${call.id}: leadScore="${aiResult.leadScore}" summary="${aiResult.summary.slice(0, 80)}"`);
+        if (aiResult.contactName && !call.contactName?.trim()) {
+          retryUpdate.contactName = aiResult.contactName;
+          await backfillContactName(aiResult.contactName, call.id, call.contactId ?? null);
+        }
+        console.log(`[poll][retry] AI result for call id=${call.id}: leadScore="${aiResult.leadScore}" contactName="${aiResult.contactName ?? "none"}" summary="${aiResult.summary.slice(0, 80)}"`);
 
         await db.update(callsTable).set(retryUpdate).where(eq(callsTable.id, call.id));
         console.log(`[poll][retry] DB updated for call id=${call.id} — transcript + summary saved`);
@@ -608,8 +634,13 @@ export async function syncInProgressCalls(): Promise<void> {
 
 // ── GET /calls ───────────────────────────────────────────────────────────────
 router.get("/calls", adminAuth, async (_req, res) => {
-  const calls = await db.select().from(callsTable).orderBy(desc(callsTable.createdAt));
-  res.json(calls.map(serializeCall));
+  const rows = await db.select({ call: callsTable, contactsName: contactsTable.name })
+    .from(callsTable)
+    .leftJoin(contactsTable, eq(callsTable.contactId, contactsTable.id))
+    .orderBy(desc(callsTable.createdAt));
+  res.json((rows as any[]).map((row: any) =>
+    serializeCall({ ...row.call, contactName: row.call.contactName?.trim() || row.contactsName?.trim() || null })
+  ));
 });
 
 // ── GET /calls/stats/summary ─────────────────────────────────────────────────
@@ -866,7 +897,11 @@ router.post("/calls/webhook", async (req, res) => {
       if (aiResult.summary) updateData.summary = aiResult.summary;
       if (aiResult.keyInsights.length > 0) updateData.keyInsights = JSON.stringify(aiResult.keyInsights);
       if (aiResult.leadScore) updateData.leadScore = aiResult.leadScore;
-      console.log(`[webhook] AI result: leadScore="${aiResult.leadScore}" summary="${aiResult.summary.slice(0, 80)}"`);
+      if (aiResult.contactName && !callRecord.contactName?.trim()) {
+        updateData.contactName = aiResult.contactName;
+        await backfillContactName(aiResult.contactName, callRecord.id, callRecord.contactId ?? null);
+      }
+      console.log(`[webhook] AI result: leadScore="${aiResult.leadScore}" contactName="${aiResult.contactName ?? "none"}" summary="${aiResult.summary.slice(0, 80)}"`);
     } else {
       console.log(`[webhook] No transcript available for call id=${callRecord.id} — skipping AI summary`);
     }
@@ -949,6 +984,10 @@ router.get("/calls/:id", adminAuth, async (req, res) => {
           if (aiResult.summary) updateData.summary = aiResult.summary;
           if (aiResult.keyInsights.length > 0) updateData.keyInsights = JSON.stringify(aiResult.keyInsights);
           if (aiResult.leadScore) updateData.leadScore = aiResult.leadScore;
+          if (aiResult.contactName && !call.contactName?.trim()) {
+            updateData.contactName = aiResult.contactName;
+            await backfillContactName(aiResult.contactName, call.id, call.contactId ?? null);
+          }
         }
 
         if (Object.keys(updateData).length > 0) {

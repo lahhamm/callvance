@@ -206,8 +206,14 @@ router.put("/admin/clients/:id/availability", async (req, res) => {
 
 router.get("/admin/clients/:id/calls", async (req, res) => {
   const clientId = Number(req.params.id);
-  const calls = await db.select().from(callsTable).where(eq(callsTable.clientId, clientId)).orderBy(desc(callsTable.createdAt));
-  res.json(calls.map(serializeCall));
+  const rows = await db.select({ call: callsTable, contactsName: contactsTable.name })
+    .from(callsTable)
+    .leftJoin(contactsTable, eq(callsTable.contactId, contactsTable.id))
+    .where(eq(callsTable.clientId, clientId))
+    .orderBy(desc(callsTable.createdAt));
+  res.json((rows as any[]).map((row: any) =>
+    serializeCall({ ...row.call, contactName: row.call.contactName?.trim() || row.contactsName?.trim() || null })
+  ));
 });
 
 // ── PATCH /admin/clients/:id/calls/:callId — update call fields (contactName, notes, etc.) ──
@@ -244,14 +250,24 @@ router.post("/admin/clients/:id/calls/:callId/analyze", async (req, res) => {
     const aiResp = await anthropic.messages.create({
       model: "claude-haiku-4-5",
       max_tokens: 1024,
-      messages: [{ role: "user", content: `Analyze this phone call. Extract:\n1. A 1-2 sentence SUMMARY.\n2. Up to 4 KEY INSIGHTS (5-8 words each).\n3. LEAD SCORE: "Hot", "Warm", or "Cold".\nRespond ONLY with JSON: {"summary":"...","keyInsights":["..."],"leadScore":"Hot"}\n\nCALL:\n${analysisText.slice(0, 3000)}` }],
+      messages: [{ role: "user", content: `Analyze this phone call. Extract:\n1. A 1-2 sentence SUMMARY.\n2. Up to 4 KEY INSIGHTS (5-8 words each).\n3. LEAD SCORE: "Hot", "Warm", or "Cold".\n4. CONTACT NAME: if the customer states their name, return it as "contactName"; otherwise null.\nRespond ONLY with JSON: {"summary":"...","keyInsights":["..."],"leadScore":"Hot","contactName":"First Last"}\n\nCALL:\n${analysisText.slice(0, 3000)}` }],
     });
     const textBlock = aiResp.content.find(b => b.type === "text");
     if (textBlock && textBlock.type === "text") {
-      const parsed = parseClaudeJSON<{ summary?: string; keyInsights?: string[]; leadScore?: string }>(textBlock.text);
+      const parsed = parseClaudeJSON<{ summary?: string; keyInsights?: string[]; leadScore?: string; contactName?: string | null }>(textBlock.text);
       if (parsed.summary) updateData.summary = parsed.summary;
       if (Array.isArray(parsed.keyInsights) && parsed.keyInsights.length > 0) updateData.keyInsights = JSON.stringify(parsed.keyInsights.slice(0, 4));
       if (parsed.leadScore && ["Hot","Warm","Cold"].includes(parsed.leadScore)) updateData.leadScore = parsed.leadScore;
+      if (parsed.contactName?.trim() && !call.contactName?.trim()) {
+        const extractedName = parsed.contactName.trim();
+        updateData.contactName = extractedName;
+        if (call.contactId) {
+          const existing = await db.select({ name: contactsTable.name }).from(contactsTable).where(eq(contactsTable.id, call.contactId)).limit(1);
+          if (existing[0] && !existing[0].name?.trim()) {
+            await db.update(contactsTable).set({ name: extractedName }).where(eq(contactsTable.id, call.contactId));
+          }
+        }
+      }
     }
   } catch (err) { console.error("[analyze] AI summary failed:", err); }
 
@@ -908,10 +924,19 @@ router.get("/admin/bookings", async (_req, res) => {
 // ── GLOBAL CALLS FEED ─────────────────────────────────────────────────────────
 
 router.get("/admin/calls", async (_req, res) => {
-  const calls = await db.select().from(callsTable).orderBy(desc(callsTable.createdAt)).limit(200);
-  const clients = await db.select().from(clientsTable);
+  const [rows, clients] = await Promise.all([
+    db.select({ call: callsTable, contactsName: contactsTable.name })
+      .from(callsTable)
+      .leftJoin(contactsTable, eq(callsTable.contactId, contactsTable.id))
+      .orderBy(desc(callsTable.createdAt))
+      .limit(200),
+    db.select().from(clientsTable),
+  ]);
   const clientMap = new Map(clients.map(c => [c.id, c.name]));
-  res.json(calls.map(c => ({ ...serializeCall(c), clientName: c.clientId ? (clientMap.get(c.clientId) ?? null) : null })));
+  res.json((rows as any[]).map((row: any) => ({
+    ...serializeCall({ ...row.call, contactName: row.call.contactName?.trim() || row.contactsName?.trim() || null }),
+    clientName: row.call.clientId ? (clientMap.get(row.call.clientId) ?? null) : null,
+  })));
 });
 
 // ── ADMIN STATS ───────────────────────────────────────────────────────────────
