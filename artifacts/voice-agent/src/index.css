@@ -195,3 +195,43 @@
     @apply font-sans antialiased bg-background text-foreground;
   }
 }
+
+/* ── Callvance Agents: constellation dashboard motion ──────────────────── */
+@keyframes agents-nebula-drift-a {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(4%, 6%) scale(1.08); }
+  100% { transform: translate(0, 0) scale(1); }
+}
+@keyframes agents-nebula-drift-b {
+  0% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-5%, -4%) scale(1.1); }
+  100% { transform: translate(0, 0) scale(1); }
+}
+@keyframes agents-core-glow {
+  0%, 100% { box-shadow: 0 0 60px 10px rgba(129, 140, 248, 0.35), 0 0 120px 40px rgba(99, 102, 241, 0.15); }
+  50% { box-shadow: 0 0 80px 18px rgba(129, 140, 248, 0.5), 0 0 150px 55px rgba(99, 102, 241, 0.22); }
+}
+@keyframes agents-working-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
+  50% { box-shadow: 0 0 0 8px rgba(52, 211, 153, 0); }
+}
+@keyframes agents-twinkle {
+  0%, 100% { opacity: 0.9; }
+  50% { opacity: 0.35; }
+}
+
+.agents-nebula-a { animation: agents-nebula-drift-a 90s ease-in-out infinite; }
+.agents-nebula-b { animation: agents-nebula-drift-b 120s ease-in-out infinite; }
+.agents-core-glow { animation: agents-core-glow 6s ease-in-out infinite; }
+.agents-working-pulse { animation: agents-working-pulse 1.8s ease-in-out infinite; }
+.agents-star { animation: agents-twinkle 5s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .agents-nebula-a,
+  .agents-nebula-b,
+  .agents-core-glow,
+  .agents-working-pulse,
+  .agents-star {
+    animation: none !important;
+  }
+}

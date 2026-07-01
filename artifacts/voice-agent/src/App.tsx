@@ -12,8 +12,13 @@ import BookingsFeed from "@/pages/admin/bookings-feed";
 import AccessPage from "@/pages/admin/access";
 import ClientPortal from "@/pages/client-portal";
 import PortalLink from "@/pages/portal-link";
+import AgentsLoginPage from "@/pages/agents/login";
+import AgentsAdminHome from "@/pages/agents/admin";
+import AgentsTenantDashboardPage from "@/pages/agents/tenant-dashboard";
+import AgentsPortalPage from "@/pages/agents/portal";
 import { useEffect } from "react";
 import { isAdminAuthenticated, isClientAuthenticated } from "@/lib/auth";
+import { isAgentsAdminAuthenticated, isAgentsTenantAuthenticated } from "@/lib/agents-auth";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -67,6 +72,33 @@ function RootRedirect() {
   return <Redirect to="/login" />;
 }
 
+function AgentsAdminGuard({ children }: { children: React.ReactNode }) {
+  if (!isAgentsAdminAuthenticated()) return <Redirect to="/agents/login" />;
+  return <>{children}</>;
+}
+
+function AgentsTenantGuard({ children }: { children: React.ReactNode }) {
+  if (!isAgentsTenantAuthenticated()) return <Redirect to="/agents/login" />;
+  return <>{children}</>;
+}
+
+// Callvance Agents is a fully independent product: separate login, separate
+// localStorage keys (lib/agents-auth.ts), separate API client (lib/agents-api.ts),
+// and its own minimal shell (no shared Layout with Receptionist). It always forces
+// dark mode while mounted and restores whatever class was present beforehand on
+// unmount, so it never fights with AdminSection/PortalSection's own dark-mode effects.
+function AgentsSection({ children }: { children: React.ReactNode }) {
+  useEffect(() => {
+    const hadDark = document.documentElement.classList.contains("dark");
+    document.documentElement.classList.add("dark");
+    return () => {
+      if (!hadDark) document.documentElement.classList.remove("dark");
+    };
+  }, []);
+
+  return <>{children}</>;
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
@@ -81,6 +113,37 @@ export default function App() {
             <Route path="/admin/access">{() => <AdminSection />}</Route>
             <Route path="/admin/clients/:id">{() => <AdminSection />}</Route>
             <Route path="/link/:token" component={PortalLink} />
+
+            {/* Callvance Agents — fully independent product (own auth, own API client) */}
+            <Route path="/agents/login">{() => <AgentsSection><AgentsLoginPage /></AgentsSection>}</Route>
+            <Route path="/agents/admin">
+              {() => (
+                <AgentsSection>
+                  <AgentsAdminGuard>
+                    <AgentsAdminHome />
+                  </AgentsAdminGuard>
+                </AgentsSection>
+              )}
+            </Route>
+            <Route path="/agents/admin/tenants/:id">
+              {() => (
+                <AgentsSection>
+                  <AgentsAdminGuard>
+                    <AgentsTenantDashboardPage />
+                  </AgentsAdminGuard>
+                </AgentsSection>
+              )}
+            </Route>
+            <Route path="/agents/portal">
+              {() => (
+                <AgentsSection>
+                  <AgentsTenantGuard>
+                    <AgentsPortalPage />
+                  </AgentsTenantGuard>
+                </AgentsSection>
+              )}
+            </Route>
+
             <Route path="/" component={RootRedirect} />
             <Route component={NotFound} />
           </Switch>
